@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Practical FIX Guide for Backend Trading Developers</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.5; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+    h1, h2, h3 { font-weight: 600; }
+    h1 { font-size: 1.8rem; margin-top: 0; }
+    h2 { font-size: 1.4rem; margin-top: 1.8rem; }
+    h3 { font-size: 1.15rem; margin-top: 1.2rem; }
+    code { background: #f5f5f5; padding: 2px 4px; border-radius: 3px; }
+    pre { background: #f5f5f5; padding: 0.75rem; border-radius: 4px; overflow-x: auto; }
+    ul { margin-left: 1.2rem; }
+    a { color: #0645ad; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    hr { margin: 2rem 0; }
+  </style>
+</head>
+<body>
+
+<h1>Practical FIX Guide for Backend Trading Developers</h1>
+
+<h2>1. Why FIX matters for us</h2>
+
+<p>FIX is the common language between our systems (OMS/EMS) and external brokers/venues. It carries every important event in an order’s life: submission, acknowledgments, fills, cancels, rejects.</p>
+
+<p>If you understand FIX:</p>
+<ul>
+  <li>You can trace an order end‑to‑end across systems.</li>
+  <li>You can debug production issues from logs instead of guessing.</li>
+  <li>You can design APIs and services that align with how markets actually behave.</li>
+</ul>
+
+<p>This guide is intentionally <strong>practical</strong> and <strong>short</strong>. It focuses on the subset of FIX that backend developers touch daily.</p>
+
+<hr />
+
+<h2>2. FIX fundamentals</h2>
+
+<h3>2.1 What FIX is</h3>
+
+<ul>
+  <li>A text-based message protocol for trading-related workflows (orders, executions, allocations, etc.). See the FIX Online Specification:
+    <a href="https://www.fixtrading.org/online-specification/">https://www.fixtrading.org/online-specification/</a>
+  </li>
+  <li>Messages are <code>tag=value</code> pairs separated by delimiters (SOH on the wire, often shown as <code>|</code> in logs).</li>
+  <li>Each message has:
+    <ul>
+      <li><strong>Standard Header</strong>: BeginString(8), BodyLength(9), MsgType(35), SenderCompID(49), TargetCompID(56), MsgSeqNum(34), SendingTime(52).</li>
+      <li><strong>Body</strong>: business fields (e.g., ClOrdID(11), Symbol(55), Side(54), OrderQty(38), Price(44)).</li>
+      <li><strong>Trailer</strong>: CheckSum(10).</li>
+    </ul>
+  </li>
+  <li>Good “anatomy” reference: OnixS message anatomy:
+    <a href="https://www.onixs.biz/insights/the-anatomy-of-fix-protocol-messages">https://www.onixs.biz/insights/the-anatomy-of-fix-protocol-messages</a>
+  </li>
+</ul>
+
+<h3>2.2 Sessions vs application messages</h3>
+
+<ul>
+  <li><strong>Session layer</strong>: connection, logon, heartbeats, sequence numbers, recovery, logout.
+    <ul>
+      <li>FIX Session Layer Online:
+        <a href="https://www.fixtrading.org/standards/fix-session-layer-online/">https://www.fixtrading.org/standards/fix-session-layer-online/</a>
+      </li>
+    </ul>
+  </li>
+  <li><strong>Application layer</strong>: orders, executions, cancels, rejects (NewOrderSingle, ExecutionReport, etc.).
+    <ul>
+      <li>FIX Online Specification (business layer entry):
+        <a href="https://www.fixtrading.org/online-specification/">https://www.fixtrading.org/online-specification/</a>
+      </li>
+    </ul>
+  </li>
+</ul>
+
+<p><strong>Mental model:</strong></p>
+<ul>
+  <li>Session layer answers: “Are we connected and in sync?”</li>
+  <li>Application layer answers: “What happened to this order?”</li>
+</ul>
+
+<h3>2.3 Key message types (by role)</h3>
+
+<p><strong>Admin</strong></p>
+<ul>
+  <li>Logon (<code>35=A</code>) – start a FIX connection.</li>
+  <li>Heartbeat (<code>35=0</code>) – keepalive when idle.</li>
+  <li>TestRequest (<code>35=1</code>) – “are you alive?”.</li>
+  <li>ResendRequest (<code>35=2</code>) – “I missed messages; resend from X to Y”.</li>
+  <li>Logout (<code>35=5</code>) – end of session.</li>
+</ul>
+
+<p><strong>Application</strong></p>
+<ul>
+  <li>NewOrderSingle (<code>35=D</code>) – submit a new order.
+    <ul>
+      <li>Example dictionary: FIX 5.0 SP2:
+        <a href="https://www.onixs.biz/fix-dictionary/5.0.sp2/msgtype_d_68.html">https://www.onixs.biz/fix-dictionary/5.0.sp2/msgtype_d_68.html</a>
+      </li>
+    </ul>
+  </li>
+  <li>OrderCancelRequest (<code>35=F</code>) – request cancel.</li>
+  <li>OrderCancelReplaceRequest (<code>35=G</code>) – amend order (quantity/price).</li>
+  <li>ExecutionReport (<code>35=8</code>) – ALL order events (ack, partial fill, fill, cancel, reject…).
+    <ul>
+      <li>FIX 4.2:
+        <a href="https://www.onixs.biz/fix-dictionary/4.2/msgtype_8_8.html">https://www.onixs.biz/fix-dictionary/4.2/msgtype_8_8.html</a>
+      </li>
+      <li>FIX 5.0 SP2:
+        <a href="https://www.onixs.biz/fix-dictionary/5.0.sp2/msgtype_8_8.html">https://www.onixs.biz/fix-dictionary/5.0.sp2/msgtype_8_8.html</a>
+      </li>
+    </ul>
+  </li>
+  <li>OrderCancelReject (<code>35=9</code>) – cancel/replace rejected.</li>
+</ul>
+
+<hr />
+
+<h2>3. Order lifecycle in FIX</h2>
+
+<h3>3.1 Core fields for order identity and quantities</h3>
+
+<ul>
+  <li>ClOrdID(11): client-assigned order ID (our OMS ID).</li>
+  <li>OrderID(37): broker/exchange-assigned ID.</li>
+  <li>OrigClOrdID(41): links cancels/replaces to the original order.</li>
+  <li>Symbol(55), Side(54), OrderQty(38), Price(44).</li>
+  <li>CumQty(14): total executed quantity.</li>
+  <li>LeavesQty(151): remaining quantity.</li>
+  <li>LastQty(32), LastPx(31): size and price of the most recent fill.</li>
+</ul>
+
+<h3>3.2 ExecutionReport: the workhorse</h3>
+
+<p>Every state change comes as an ExecutionReport (<code>35=8</code>) with:</p>
+<ul>
+  <li>ExecType(150): what happened (NEW, PARTIAL_FILL, FILL, CANCELED, REJECTED, REPLACED, etc.).</li>
+  <li>OrdStatus(39): current order state.</li>
+</ul>
+
+<p>Useful state/transition docs:</p>
+<ul>
+  <li>Order State Changes:
+    <a href="https://www.fixtrading.org/online-specification/order-state-changes/">https://www.fixtrading.org/online-specification/order-state-changes/</a>
+  </li>
+</ul>
+
+<p>Typical <code>OrdStatus(39)</code> values:</p>
+<ul>
+  <li>0 – New</li>
+  <li>1 – Partially filled</li>
+  <li>2 – Filled</li>
+  <li>4 – Canceled</li>
+  <li>8 – Rejected</li>
+  <li>6 – Pending Cancel</li>
+  <li>E – Pending Replace</li>
+</ul>
+
+<h3>3.3 Example lifecycle</h3>
+
+<p><strong>Scenario:</strong> Limit order for 10,000 shares.</p>
+<ol>
+  <li>Client → Broker: NewOrderSingle (<code>35=D</code>) with <code>ClOrdID=ABC1</code>, <code>OrderQty=10000</code>, <code>Price=10.00</code>.</li>
+  <li>Broker → Client: ExecutionReport NEW (<code>ExecType=0</code>, <code>OrdStatus=0</code>, <code>CumQty=0</code>, <code>LeavesQty=10000</code>).</li>
+  <li>Partial fill: ExecutionReport PARTIAL_FILL (<code>ExecType=1</code>, <code>OrdStatus=1</code>, <code>LastQty=2000</code>, <code>CumQty=2000</code>, <code>LeavesQty=8000</code>).</li>
+  <li>Final fill: ExecutionReport FILL (<code>ExecType=2</code>, <code>OrdStatus=2</code>, <code>LastQty=8000</code>, <code>CumQty=10000</code>, <code>LeavesQty=0</code>).</li>
+</ol>
+
+<p><strong>How devs use this:</strong></p>
+<ul>
+  <li>When debugging “order stuck” issues, check the sequence of ExecutionReports and verify <code>CumQty</code>/<code>LeavesQty</code> and <code>OrdStatus</code> progression.</li>
+  <li>If the UI shows Filled but the last ExecutionReport has <code>OrdStatus=1</code>, there’s a state-mapping bug.</li>
+</ul>
+
+<hr />
+
+<h2>4. Session management</h2>
+
+<h3>4.1 Connection and logon</h3>
+
+<ul>
+  <li>FIX rides on a TCP socket; once connected, Logon (<code>35=A</code>) must be the first message from the initiator.</li>
+  <li>Key Logon fields:
+    <ul>
+      <li>SenderCompID(49), TargetCompID(56) – identities.</li>
+      <li>HeartBtInt(108) – heartbeat interval (seconds).</li>
+      <li>MsgSeqNum(34) – session sequence number.</li>
+      <li>Optional ResetSeqNumFlag(141) – sequence reset behavior.</li>
+    </ul>
+  </li>
+  <li>Spec:
+    <a href="https://www.fixtrading.org/standards/fix-session-layer-online/">https://www.fixtrading.org/standards/fix-session-layer-online/</a>
+  </li>
+</ul>
+
+<p><strong>Rule of thumb:</strong> No application messages (orders) should be sent before you receive the peer’s Logon ack.</p>
+
+<h3>4.2 Heartbeats and liveness</h3>
+
+<ul>
+  <li>During idle periods, both sides send Heartbeat (<code>35=0</code>) at <code>HeartBtInt</code> intervals.</li>
+  <li>If you suspect the peer is stuck, send TestRequest (<code>35=1</code>); peer must respond with Heartbeat including TestReqID(112).</li>
+  <li>No heartbeat / response within agreed timeout → treat as session down.</li>
+</ul>
+
+<h3>4.3 Sequence numbers and recovery</h3>
+
+<ul>
+  <li>MsgSeqNum(34) increments by 1 for each message in a session.</li>
+  <li>If a party detects a gap (e.g., sees seq 1, 2, 5), it sends ResendRequest (<code>35=2</code>) asking for missing messages.</li>
+  <li>Peer responds with:
+    <ul>
+      <li>Resent messages with PossDupFlag(43)=Y, and/or</li>
+      <li>Gap fills (SequenceReset with GapFillFlag=Y) when missing messages are intentionally skipped.</li>
+    </ul>
+  </li>
+  <li>Session test cases:
+    <a href="https://www.fixtrading.org/standards/fix-session-testcases-online/">https://www.fixtrading.org/standards/fix-session-testcases-online/</a>
+  </li>
+</ul>
+
+<p><strong>For developers:</strong> The FIX engine should hide most of this, but you need it to interpret logs and avoid double-processing duplicates.</p>
+
+<hr />
+
+<h2>5. Common failure scenarios</h2>
+
+<h3>5.1 Disconnects</h3>
+
+<p><strong>Symptoms:</strong></p>
+<ul>
+  <li>No heartbeats, socket closed, or repeated TestRequests.</li>
+  <li>Orders may be in-flight; last state in our OMS may not match the venue.</li>
+</ul>
+
+<p><strong>What to look for:</strong></p>
+<ul>
+  <li>Last few admin messages (TestRequest, Heartbeat, Logout).</li>
+  <li>Whether sequence numbers were in-sync before disconnect.</li>
+  <li>Any ResendRequests on reconnection.</li>
+</ul>
+
+<h3>5.2 Duplicates</h3>
+
+<p><strong>Cause:</strong></p>
+<ul>
+  <li>Session recovery/resend after disconnect; peer resends older messages with PossDupFlag(43)=Y.</li>
+</ul>
+
+<p><strong>Implications:</strong></p>
+<ul>
+  <li>Order/position services must treat ExecutionReports with the same ExecID(17) as idempotent.</li>
+  <li>State updates should be robust to reprocessing old fills.</li>
+</ul>
+
+<h3>5.3 Out-of-sync sequences</h3>
+
+<p><strong>Symptoms:</strong></p>
+<ul>
+  <li>Logon rejected due to unexpected MsgSeqNum.</li>
+  <li>Immediate ResendRequest after logon.</li>
+</ul>
+
+<p><strong>Actions:</strong></p>
+<ul>
+  <li>Check which side is ahead/behind.</li>
+  <li>Confirm message store configuration (where historical messages are loaded from).</li>
+  <li>Ensure you’re not resetting sequences without mutual agreement.</li>
+</ul>
+
+<h3>5.4 Business rejects</h3>
+
+<p>Examples:</p>
+<ul>
+  <li>OrderCancelReject (<code>35=9</code>).</li>
+  <li>ExecutionReport with <code>OrdStatus=8</code> (Rejected) and Text(58) explaining the business reason.</li>
+</ul>
+
+<p>Typical causes:</p>
+<ul>
+  <li>Invalid price/quantity.</li>
+  <li>Order too late to cancel.</li>
+  <li>Instrument not tradable in that venue/session.</li>
+</ul>
+
+<p>How to debug:</p>
+<ul>
+  <li>Look at Text(58) and OrdRejReason(103).</li>
+  <li>Compare our request fields against the venue’s rules (price increments, min size, etc.).</li>
+</ul>
+
+<hr />
+
+<h2>6. Practical system perspective (OMS/EMS/exchange)</h2>
+
+<h3>6.1 Typical architecture</h3>
+
+<ul>
+  <li><strong>OMS (Order Management System)</strong>:
+    <ul>
+      <li>Owns client-side order IDs (ClOrdID).</li>
+      <li>Applies internal rules (risk, credit, compliance).</li>
+      <li>Routes to brokers/venues via FIX or other APIs.</li>
+    </ul>
+  </li>
+  <li><strong>EMS (Execution Management System)</strong>:
+    <ul>
+      <li>Closer to execution, multi-venue routing, algorithms.</li>
+      <li>Translates high-level instructions into venue-specific FIX flows.</li>
+    </ul>
+  </li>
+  <li><strong>Exchange/Broker gateway</strong>:
+    <ul>
+      <li>FIX acceptor.</li>
+      <li>Validates session, business rules, routes to matching engine or external venues.</li>
+    </ul>
+  </li>
+</ul>
+
+<h3>6.2 How a single order flows</h3>
+
+<ol>
+  <li>User/trader submits order via UI → OMS.</li>
+  <li>OMS validates, assigns ClOrdID, persists state.</li>
+  <li>OMS → Broker via NewOrderSingle (<code>35=D</code>).</li>
+  <li>Broker sends ExecutionReports: NEW → PARTIAL_FILL → FILL/CANCELED.</li>
+  <li>OMS updates internal state and downstream services based on ExecutionReports.</li>
+</ol>
+
+<p><strong>Key point:</strong> the source of truth for execution state is the sequence of ExecutionReports from the venue. Our internal state should be a faithful projection of that.</p>
+
+<hr />
+
+<h2>7. FIX for debugging and production support</h2>
+
+<h3>7.1 Reading logs</h3>
+
+<p>Typical production incident questions: “my order disappeared”, “partial fill not reflected”, “cancel too late”. Start with:</p>
+<ul>
+  <li>FIX session logs:
+    <ul>
+      <li>Filter by CompIDs and ClOrdID(11).</li>
+      <li>Confirm the chain: Logon → NewOrderSingle → ExecutionReports → Logout.</li>
+    </ul>
+  </li>
+  <li>Application logs:
+    <ul>
+      <li>Where we parse FIX and map to internal entities.</li>
+    </ul>
+  </li>
+</ul>
+
+<h3>7.2 Typical debug questions</h3>
+
+<ul>
+  <li>Did we actually send the NewOrderSingle? (Check ClOrdID and MsgSeqNum in outbound logs.)</li>
+  <li>Did the broker acknowledge it as NEW? (ExecutionReport with <code>ExecType=0</code>, <code>OrdStatus=0</code>.)</li>
+  <li>Were there any ResendRequests that produced duplicates or reordering?</li>
+  <li>Is our view of <code>CumQty</code>/<code>LeavesQty</code> consistent with the last ExecutionReport?</li>
+</ul>
+
+<h3>7.3 Building better tooling</h3>
+
+<ul>
+  <li>“Order timeline” view that reconstructs state from raw FIX logs.</li>
+  <li>Alerting when:
+    <ul>
+      <li>Session is up but no heartbeats.</li>
+      <li>High rate of ResendRequests.</li>
+      <li>Repeated OrderCancelRejects for the same order.</li>
+    </ul>
+  </li>
+</ul>
+
+<hr />
+
+<h2>8. Curated FIX resources (by topic)</h2>
+
+<h3>8.1 General / specification</h3>
+
+<ul>
+  <li>FIX Latest Online Specification:
+    <a href="https://www.fixtrading.org/online-specification/">https://www.fixtrading.org/online-specification/</a>
+  </li>
+  <li>Introduction to FIX:
+    <a href="https://www.fixtrading.org/online-specification/introduction/">https://www.fixtrading.org/online-specification/introduction/</a>
+  </li>
+  <li>FIX Standards overview:
+    <a href="https://www.fixtrading.org/standards/">https://www.fixtrading.org/standards/</a>
+  </li>
+</ul>
+
+<h3>8.2 Session layer (logon, heartbeats, sequences)</h3>
+
+<ul>
+  <li>FIX Session Layer Online:
+    <a href="https://www.fixtrading.org/standards/fix-session-layer-online/">https://www.fixtrading.org/standards/fix-session-layer-online/</a>
+  </li>
+  <li>FIX Session Test Cases:
+    <a href="https://www.fixtrading.org/standards/fix-session-testcases-online/">https://www.fixtrading.org/standards/fix-session-testcases-online/</a>
+  </li>
+  <li>OnixS: FIXT 1.1 Session Protocol:
+    <a href="https://www.onixs.biz/fix-dictionary/fixt1.1/section_session_protocol.html">https://www.onixs.biz/fix-dictionary/fixt1.1/section_session_protocol.html</a>
+  </li>
+  <li>FIXSIM: FIX Protocol Tutorial:
+    <a href="https://www.fixsim.com/fix-protocol-tutorial">https://www.fixsim.com/fix-protocol-tutorial</a>
+  </li>
+</ul>
+
+<h3>8.3 Order lifecycle and message dictionaries</h3>
+
+<ul>
+  <li>FIX Business Area: Trade:
+    <a href="https://www.fixtrading.org/online-specification/business-area-trade/">https://www.fixtrading.org/online-specification/business-area-trade/</a>
+  </li>
+  <li>ExecutionReport (FIX 4.2):
+    <a href="https://www.onixs.biz/fix-dictionary/4.2/msgtype_8_8.html">https://www.onixs.biz/fix-dictionary/4.2/msgtype_8_8.html</a>
+  </li>
+  <li>ExecutionReport (FIX 5.0 SP2):
+    <a href="https://www.onixs.biz/fix-dictionary/5.0.sp2/msgtype_8_8.html">https://www.onixs.biz/fix-dictionary/5.0.sp2/msgtype_8_8.html</a>
+  </li>
+  <li>NewOrderSingle (FIX 5.0 SP2):
+    <a href="https://www.onixs.biz/fix-dictionary/5.0.sp2/msgtype_d_68.html">https://www.onixs.biz/fix-dictionary/5.0.sp2/msgtype_d_68.html</a>
+  </li>
+  <li>Order State Changes / Matrices:
+    <a href="https://www.fixtrading.org/online-specification/order-state-changes/">https://www.fixtrading.org/online-specification/order-state-changes/</a>
+  </li>
+</ul>
+
+<h3>8.4 Testing and simulation</h3>
+
+<ul>
+  <li>FIXSIM Testing Platform:
+    <a href="https://www.fixsim.com/fix-protocol-testing">https://www.fixsim.com/fix-protocol-testing</a>
+  </li>
+  <li>FIXP (performance session layer, for context):
+    <a href="https://github.com/FIXTradingCommunity/fixp-specification">https://github.com/FIXTradingCommunity/fixp-specification</a>
+  </li>
+</ul>
+
+<h3>8.5 Developer-friendly references</h3>
+
+<ul>
+  <li>GitHub: FIX Protocol Study Guide:
+    <a href="https://github.com/backstreetbrogrammer/55_FIX_Protocol_Study_Guide">https://github.com/backstreetbrogrammer/55_FIX_Protocol_Study_Guide</a>
+  </li>
+</ul>
+
+<hr />
+
+<h2>9. How to use this internally</h2>
+
+<ul>
+  <li>Add this page to the team wiki under something like “Trading Fundamentals → FIX”.</li>
+  <li>Ask new joiners to:
+    <ul>
+      <li>Read sections 2–4.</li>
+      <li>Walk through one real order from logs and annotate each FIX message.</li>
+    </ul>
+  </li>
+  <li>For on-call/support:
+    <ul>
+      <li>Use sections 5 and 7 as an incident checklist.</li>
+    </ul>
+  </li>
+</ul>
+
+</body>
+</html>
