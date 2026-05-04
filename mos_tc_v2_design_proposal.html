@@ -1,0 +1,1401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>MOS Transaction Cache V2 — Design Proposal</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,700;1,300&display=swap');
+
+  :root {
+    --bg:        #0d0f14;
+    --panel:     #131720;
+    --panel-2:   #0f1320;
+    --border:    #1e2535;
+    --border-2:  #2a3346;
+    --accent:    #00c2ff;
+    --accent2:   #ff6b35;
+    --accent3:   #7cfc6e;
+    --accent4:   #c084fc;
+    --accent5:   #ffd45e;
+    --text:      #d4dbe8;
+    --muted:     #6b7a95;
+    --heading:   #eaf0ff;
+    --mono:      'IBM Plex Mono', monospace;
+    --sans:      'IBM Plex Sans', sans-serif;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.7;
+    padding: 2.5rem 1.5rem 4rem;
+  }
+
+  .page { max-width: 1100px; margin: 0 auto; }
+
+  /* HEADER */
+  header {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 1.5rem;
+    margin-bottom: 2rem;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: .4rem;
+  }
+  h1 {
+    font-family: var(--mono);
+    font-size: 1.7rem;
+    font-weight: 600;
+    color: var(--heading);
+    letter-spacing: -.02em;
+    line-height: 1.2;
+  }
+  .subtitle {
+    margin-top: .5rem;
+    color: var(--muted);
+    font-size: 0.92rem;
+    font-style: italic;
+    font-weight: 300;
+    max-width: 800px;
+  }
+  .meta-bar {
+    display: flex;
+    gap: 1.5rem;
+    margin-top: 1rem;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--muted);
+    letter-spacing: .05em;
+  }
+  .meta-bar span strong {
+    color: var(--accent3);
+    font-weight: 500;
+  }
+
+  /* TOC */
+  .toc {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.1rem 1.4rem;
+    margin: 1.5rem 0 2rem;
+    columns: 2;
+    column-gap: 2rem;
+  }
+  .toc h3 {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: .5rem;
+    column-span: all;
+  }
+  .toc ol {
+    list-style: none;
+    counter-reset: tocitem;
+    padding: 0;
+    margin: 0;
+    font-size: 0.85rem;
+  }
+  .toc li {
+    counter-increment: tocitem;
+    padding: .15rem 0;
+    break-inside: avoid;
+  }
+  .toc li::before {
+    content: counter(tocitem, decimal-leading-zero) ". ";
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: .75rem;
+  }
+  .toc a {
+    color: var(--text);
+    text-decoration: none;
+  }
+  .toc a:hover { color: var(--accent); }
+
+  /* SECTION */
+  section { margin-bottom: 2.4rem; scroll-margin-top: 1rem; }
+  h2 {
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    border-left: 3px solid var(--accent);
+    padding-left: .7rem;
+    margin-bottom: 1rem;
+    margin-top: 2rem;
+  }
+  h2.danger { color: var(--accent2); border-left-color: var(--accent2); }
+  h2.success { color: var(--accent3); border-left-color: var(--accent3); }
+  h3 {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--heading);
+    margin: 1.2rem 0 .4rem;
+  }
+  h4 {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--accent3);
+    font-family: var(--mono);
+    margin: .8rem 0 .3rem;
+  }
+  p { margin-bottom: .6rem; }
+
+  /* CALLOUT */
+  .callout {
+    background: #111827;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent2);
+    border-radius: 6px;
+    padding: .85rem 1rem;
+    margin: 1rem 0;
+    font-size: 0.88rem;
+  }
+  .callout.green  { border-left-color: var(--accent3); }
+  .callout.blue   { border-left-color: var(--accent);  }
+  .callout.purple { border-left-color: var(--accent4); }
+  .callout.amber  { border-left-color: var(--accent5); }
+  .callout strong { color: var(--heading); }
+  .callout-title {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: .4rem;
+  }
+  .callout.green .callout-title { color: var(--accent3); }
+  .callout.amber .callout-title { color: var(--accent5); }
+  .callout.purple .callout-title { color: var(--accent4); }
+
+  /* DIAGRAM */
+  .diagram {
+    background: #0b0e16;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.2rem;
+    overflow-x: auto;
+    margin: 1rem 0;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    line-height: 1.6;
+    color: #a8c8e8;
+    white-space: pre;
+  }
+
+  /* TABLE */
+  .tbl-wrap { overflow-x: auto; margin: .8rem 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th {
+    background: #111827;
+    color: var(--heading);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    padding: .55rem .75rem;
+    border: 1px solid var(--border-2);
+    text-align: left;
+    white-space: nowrap;
+  }
+  td {
+    padding: .5rem .75rem;
+    border: 1px solid var(--border);
+    vertical-align: top;
+    color: var(--text);
+    line-height: 1.5;
+  }
+  tr:nth-child(even) td { background: #0f1218; }
+
+  /* CODE */
+  pre {
+    background: #080b12;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.2rem;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    line-height: 1.6;
+    color: #a8c8e8;
+    margin: .8rem 0;
+  }
+  pre .c  { color: #4a5a6a; }
+  pre .k  { color: var(--accent3); }
+  pre .s  { color: var(--accent5); }
+  pre .t  { color: var(--accent); }
+  pre .v  { color: var(--accent2); }
+  pre .h  { color: var(--accent4); font-weight: 600; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.82em;
+    background: #1a1f2c;
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--accent3);
+  }
+
+  /* LIST */
+  ul, ol { padding-left: 1.3rem; margin: .4rem 0 .8rem; }
+  li { margin: .3rem 0; }
+  li::marker { color: var(--accent); }
+  ol li::marker { color: var(--muted); font-family: var(--mono); font-size: .8rem; }
+
+  ul.cons li::marker { color: var(--accent2); }
+  ul.pros li::marker { color: var(--accent3); }
+
+  /* TAGS */
+  .tag {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: .65rem;
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-right: 4px;
+    vertical-align: middle;
+    letter-spacing: .04em;
+    white-space: nowrap;
+  }
+  .tag.ok    { background: #0a2010; color: var(--accent3); border: 1px solid #1a4020; }
+  .tag.warn  { background: #2a1800; color: #ffa040; border: 1px solid #4a3000; }
+  .tag.info  { background: #071828; color: var(--accent);  border: 1px solid #0a3050; }
+  .tag.risk  { background: #2a0a0a; color: var(--accent2); border: 1px solid #4a1a1a; }
+  .tag.new   { background: #1a0a2a; color: var(--accent4); border: 1px solid #3a1a4a; }
+
+  /* PITFALL CARDS */
+  .pitfall {
+    background: linear-gradient(180deg, #1a0e0a 0%, #110a08 100%);
+    border: 1px solid #3a1a14;
+    border-left: 3px solid var(--accent2);
+    border-radius: 6px;
+    padding: 1rem 1.1rem;
+    margin: .8rem 0;
+  }
+  .pitfall-num {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: .08em;
+    color: var(--accent2);
+    font-weight: 600;
+  }
+  .pitfall-title {
+    font-weight: 700;
+    color: var(--heading);
+    font-size: .95rem;
+    margin: .15rem 0 .5rem;
+  }
+  .pitfall-body { font-size: 0.85rem; color: var(--text); line-height: 1.65; }
+  .pitfall-quote {
+    margin-top: .6rem;
+    padding: .5rem .8rem;
+    border-left: 2px solid var(--accent2);
+    background: rgba(255,107,53,0.05);
+    font-size: 0.8rem;
+    font-style: italic;
+    color: #ffb090;
+    font-family: var(--mono);
+  }
+
+  /* SCENARIO BOX */
+  .scenario {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.1rem;
+    margin: .8rem 0;
+  }
+  .scenario-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: .5rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: .4rem;
+  }
+  .scenario-num {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: .08em;
+    color: var(--accent);
+  }
+  .scenario-title {
+    font-weight: 700;
+    color: var(--heading);
+    font-size: 1rem;
+  }
+
+  /* TIMELINE */
+  .timeline {
+    position: relative;
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+    border-left: 2px solid var(--border);
+  }
+  .timeline-step {
+    position: relative;
+    padding: .5rem 0 .5rem 1rem;
+  }
+  .timeline-step::before {
+    content: '';
+    position: absolute;
+    left: -1.6rem;
+    top: 1rem;
+    width: 8px;
+    height: 8px;
+    background: var(--accent);
+    border-radius: 50%;
+    border: 2px solid var(--bg);
+  }
+  .timeline-step.t2::before { background: var(--accent2); }
+  .timeline-step.t3::before { background: var(--accent5); }
+  .timeline-step.t4::before { background: var(--accent3); }
+  .timeline-step .step-time {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    color: var(--muted);
+    letter-spacing: .06em;
+  }
+  .timeline-step .step-title {
+    font-weight: 700;
+    color: var(--heading);
+    font-size: .9rem;
+    margin: .15rem 0;
+  }
+
+  /* CHECKLIST */
+  .checklist {
+    list-style: none;
+    padding-left: 0;
+  }
+  .checklist li {
+    padding: .25rem 0 .25rem 1.5rem;
+    position: relative;
+  }
+  .checklist li::before {
+    content: '☐';
+    position: absolute;
+    left: 0;
+    color: var(--accent);
+    font-size: 1rem;
+  }
+  .checklist li.done::before {
+    content: '☑';
+    color: var(--accent3);
+  }
+
+  /* COMPARISON GRID */
+  .vs-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: .8rem;
+    margin: 1rem 0;
+  }
+  .vs-card {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: .8rem .9rem;
+    font-size: 0.84rem;
+  }
+  .vs-card.win { border-color: #1a4020; background: #0a2010; }
+  .vs-card.lose { border-color: #4a1a1a; background: #2a0a0a; }
+  .vs-card .vs-label {
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    letter-spacing: .08em;
+    color: var(--muted);
+    margin-bottom: .3rem;
+  }
+  .vs-card.win .vs-label { color: var(--accent3); }
+  .vs-card.lose .vs-label { color: var(--accent2); }
+
+  /* STATS */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: .8rem;
+    margin: 1rem 0;
+  }
+  .stat {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: .8rem;
+    text-align: center;
+  }
+  .stat-value {
+    font-family: var(--mono);
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  .stat.danger .stat-value { color: var(--accent2); }
+  .stat.warn .stat-value { color: var(--accent5); }
+  .stat.success .stat-value { color: var(--accent3); }
+  .stat-label {
+    font-size: 0.7rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    margin-top: .2rem;
+  }
+
+  hr {
+    border: 0;
+    border-top: 1px solid var(--border);
+    margin: 1.5rem 0;
+  }
+
+  .meta-footer {
+    margin-top: 3rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    font-size: .75rem;
+    color: var(--muted);
+    text-align: center;
+  }
+
+  /* HISTORICAL CONTEXT */
+  .history-block {
+    background: linear-gradient(180deg, #1a1525 0%, #110d18 100%);
+    border: 1px solid #2a2540;
+    border-left: 3px solid var(--accent4);
+    border-radius: 6px;
+    padding: 1rem 1.1rem;
+    margin: .8rem 0;
+    font-size: 0.85rem;
+  }
+  .history-date {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: .08em;
+    color: var(--accent4);
+    text-transform: uppercase;
+    margin-bottom: .3rem;
+  }
+  .history-block p { margin-bottom: .4rem; }
+  .history-block strong { color: var(--heading); }
+</style>
+</head>
+<body>
+<div class="page">
+
+<!-- HEADER -->
+<header>
+  <div class="eyebrow">Equity Trading Systems · Architecture Proposal · MOS Platform</div>
+  <h1>Transaction Cache V2 — Distributed Data Grid Design</h1>
+  <p class="subtitle">A pragmatic redesign of the MOS transaction cache addressing heap pressure, query scalability, and external app compatibility — leveraging Barclays' existing Hazelcast footprint.</p>
+  <div class="meta-bar">
+    <span>Author · <strong>Marozas, Zilvinas : IT (WHP)</strong></span>
+    <span>Status · <strong>Draft for Review</strong></span>
+    <span>Predecessor · Transactioncache V2 (Mar 2024, dormant)</span>
+  </div>
+</header>
+
+<!-- TOC -->
+<div class="toc">
+  <h3>Contents</h3>
+  <ol>
+    <li><a href="#exec">Executive summary</a></li>
+    <li><a href="#problem">Problem statement</a></li>
+    <li><a href="#prior">Prior work — Prague team's V2 design</a></li>
+    <li><a href="#pitfalls">Design pitfalls in the EU proposal</a></li>
+    <li><a href="#options">Storage technology options</a></li>
+    <li><a href="#barclays-state">Barclays current state evidence</a></li>
+    <li><a href="#recommendation">Recommended approach: Hazelcast</a></li>
+    <li><a href="#architecture">Detailed architecture</a></li>
+    <li><a href="#query-interface">Message-driven query interface</a></li>
+    <li><a href="#tiered-model">Tiered memory model</a></li>
+    <li><a href="#scenarios">Failure &amp; recovery scenarios</a></li>
+    <li><a href="#hazelcast-vs-infinispan">Hazelcast vs Infinispan deep dive</a></li>
+    <li><a href="#migration">Migration plan</a></li>
+    <li><a href="#open-questions">Open questions for May</a></li>
+  </ol>
+</div>
+
+<!-- 1 EXECUTIVE SUMMARY -->
+<section id="exec">
+<h2>1 · Executive summary</h2>
+
+<p>The MOS transaction cache faces unsustainable heap growth — over 32GB at peak with 1M+ intraday orders — requiring daily restart to operate. The Prague team's <strong>March 2024 V2 design</strong> evaluated three approaches (Kafka-based, local file/DB, application separation) but reached no decision. The page has been dormant since then.</p>
+
+<p>This proposal recommends a <strong>tiered architecture combining Neeve (write path) with Hazelcast (distributed query store)</strong>. Hazelcast is the preferred technology because it is verifiably in production at Barclays today (USCB COO team's March 2026 deployment), with established internal expertise and bank-scale trading case studies (Morgan Stanley, HSBC, JP Morgan/Highbridge Capital).</p>
+
+<div class="callout green">
+<div class="callout-title">Bottom line</div>
+Keep Neeve. Keep Solace. Keep <code>.rdat</code>. Add Hazelcast as a distributed query layer fed by the Neeve TC primary. Evict terminal orders from Neeve heap; Hazelcast retains them for Batman/GUI queries through the existing message-driven interface. <strong>Zero changes to external consumer apps.</strong>
+</div>
+
+<div class="stats">
+  <div class="stat danger"><div class="stat-value">32+ GB</div><div class="stat-label">Current TC heap</div></div>
+  <div class="stat warn"><div class="stat-value">1M+</div><div class="stat-label">Intraday orders</div></div>
+  <div class="stat success"><div class="stat-value">~4 GB</div><div class="stat-label">Target Neeve heap</div></div>
+  <div class="stat"><div class="stat-value">2026</div><div class="stat-label">Hazelcast deployed at Barclays</div></div>
+</div>
+</section>
+
+<!-- 2 PROBLEM -->
+<section id="problem">
+<h2>2 · Problem statement</h2>
+
+<p>The Transaction Cache (TC) operates as a single Neeve agent with active backup, holding all order state directly in Java Maps. As the OMS publishes order events through Solace, the TC builds a materialised view that serves queries from external apps including GUI clients, Batman, and the dfd-command tool.</p>
+
+<h3>Current responsibilities (per Prague design)</h3>
+<ul>
+  <li>Provide the latest version of orders to Batman and other clients (intraday restarts)</li>
+  <li>Provide trade and order history to Batman for the historical blotter view</li>
+  <li>Provide GTCs, GTDs and other long-lived orders to the Blackbird OMS, since the OMS keeps order objects only for a day or week depending on its restart schedule</li>
+</ul>
+
+<h3>Constraints driving the redesign</h3>
+<ul>
+  <li><strong>Heap exhaustion:</strong> EOD heap reaches extreme size, daily restart required to operate</li>
+  <li><strong>Single-node ceiling:</strong> Primary/backup mirrors full state — memory cost doubled across topology</li>
+  <li><strong>External app coupling:</strong> Batman, GUI, OMS depend on existing message-driven interface — cannot change APIs</li>
+  <li><strong>Mixed query patterns:</strong> Hot intraday reads + full-day cross-symbol queries + GTC/GTD overnight queries</li>
+  <li><strong>Existing infrastructure investment:</strong> Neeve <code>.rdat</code> journal, Solace fabric, OMS sharding model — all working well, must be preserved</li>
+</ul>
+</section>
+
+<!-- 3 PRIOR WORK -->
+<section id="prior">
+<h2>3 · Prior work — Prague team's V2 design</h2>
+
+<p>The Prague team (Tomas Kovarik, IT PRG) drafted a comprehensive V2 design in March 2024. The document evaluated three approaches but did not converge on a recommendation. <strong>The page has not been updated for over a year.</strong></p>
+
+<div class="history-block">
+  <div class="history-date">March 21, 2024 — V2 Design Authored</div>
+  <p>Prague team published <code>Transactioncache V2 design</code> in the Blackbird Confluence space. Three approaches outlined: Kafka-based (with coupled and decoupled variants), local file/embedded DB, and application separation (split TC into trader query cache + overnight orders).</p>
+</div>
+
+<div class="history-block">
+  <div class="history-date">August 23, 2024 — Coherence Comment</div>
+  <p>I posted a comment on the V2 design page: <em>"I wonder if Distributed Cache option like Oracle Coherence was considered instead of Apache Kafka."</em> The comment received no reply. The thread is the only comment on the page.</p>
+</div>
+
+<div class="history-block">
+  <div class="history-date">May 2026 — Current State</div>
+  <p>The V2 design page remains untouched since March 2024. No follow-up design exists. This proposal formalises the distributed cache direction I raised in 2024, now with concrete evidence of Hazelcast adoption elsewhere at Barclays.</p>
+</div>
+
+<h3>Prague team's three approaches (summary)</h3>
+
+<div class="tbl-wrap">
+<table>
+  <tr><th>Approach</th><th>Storage</th><th>Recovery model</th><th>Status</th></tr>
+  <tr>
+    <td>1. Kafka-based</td>
+    <td>Kafka topics (data + instruction)</td>
+    <td>Replay all events from Kafka topic</td>
+    <td><span class="tag warn">Most detailed but slow recovery</span></td>
+  </tr>
+  <tr>
+    <td>2. Local file / embedded DB</td>
+    <td>Embedded DB or synchronised remote DB per node</td>
+    <td>Restore from local DB or replication</td>
+    <td><span class="tag warn">Cannot reshard intraday</span></td>
+  </tr>
+  <tr>
+    <td>3. Application separation</td>
+    <td>Hand TC off to TC2 project; we keep overnight only</td>
+    <td>Compacted Kafka topic</td>
+    <td><span class="tag risk">Loses control of trader query path</span></td>
+  </tr>
+</table>
+</div>
+</section>
+
+<!-- 4 PITFALLS -->
+<section id="pitfalls">
+<h2 class="danger">4 · Design pitfalls in the EU proposal</h2>
+<p>The Prague team's analysis is rigorous, but each of their three approaches has structural problems that justify proposing an alternative direction. The pitfalls below are direct from their own documented Cons section, plus additional concerns identified through this analysis.</p>
+
+<div class="pitfall">
+  <div class="pitfall-num">PITFALL 01 · Kafka approach</div>
+  <div class="pitfall-title">Slow restoration on restart — replay from beginning</div>
+  <div class="pitfall-body">
+    With 1M+ orders accumulated through a trading session, replaying every event from a Kafka topic on application restart takes minutes. During this window the TC is unavailable. The Prague team explicitly acknowledges this is a major drawback.
+  </div>
+  <div class="pitfall-quote">"Long restoration — Messages must be replayed from the beginning to achieve the same state."</div>
+</div>
+
+<div class="pitfall">
+  <div class="pitfall-num">PITFALL 02 · Kafka approach</div>
+  <div class="pitfall-title">Data duplicated in Kafka cluster AND application heap</div>
+  <div class="pitfall-body">
+    Kafka becomes an additional storage tier — the entire dataset exists in Kafka topics, in primary heap, and in backup heap simultaneously. This compounds rather than solves the original heap problem. Storage cost is now 3× the dataset size.
+  </div>
+  <div class="pitfall-quote">"Data will be duplicated, in Kafka cluster and in application nodes — Kafka is used only as message broker for failure restoration."</div>
+</div>
+
+<div class="pitfall">
+  <div class="pitfall-num">PITFALL 03 · Kafka approach</div>
+  <div class="pitfall-title">Application start needs to read every message</div>
+  <div class="pitfall-body">
+    The cons section explicitly notes that startup reads the entire topic. This makes intraday restart practically impossible — a primary failure during market hours becomes a multi-minute outage. For a trading system this is operationally unacceptable.
+  </div>
+  <div class="pitfall-quote">"Application start needs to read every message."</div>
+</div>
+
+<div class="pitfall">
+  <div class="pitfall-num">PITFALL 04 · Kafka approach</div>
+  <div class="pitfall-title">Intraday resharding is "complicated" — i.e. unsolved</div>
+  <div class="pitfall-body">
+    The notes section acknowledges that adding shards during the trading day is theoretically possible but practically complicated. This means the design cannot respond to volume spikes, and capacity planning becomes a one-time-per-day exercise.
+  </div>
+  <div class="pitfall-quote">"In theory ability to do intraday resharding — adding more nodes on high demand — however it will be complicated."</div>
+</div>
+
+<div class="pitfall">
+  <div class="pitfall-num">PITFALL 05 · Local file / embedded DB approach</div>
+  <div class="pitfall-title">Cannot add new shards during the day</div>
+  <div class="pitfall-body">
+    The embedded DB option ties storage to each node's local disk. New nodes have no historical data and cannot catch up because the feed isn't shared. This is acknowledged as "almost impossible" in the design notes.
+  </div>
+  <div class="pitfall-quote">"Intraday adding more nodes will be almost impossible as the feed will not be in sync (for embedded DB only)."</div>
+</div>
+
+<div class="pitfall">
+  <div class="pitfall-num">PITFALL 06 · Local file / embedded DB approach</div>
+  <div class="pitfall-title">Storing data as opaque blobs prevents queries</div>
+  <div class="pitfall-body">
+    The embedded DB cons explicitly mention "storing data as a blob" and "filtering" as cons. This means cross-symbol queries (Batman's account-level view) require full scans, which scales poorly at 1M orders.
+  </div>
+  <div class="pitfall-quote">"Cons: Filtering. Storing data as a blob. The overall loss of ability to replicate the flow."</div>
+</div>
+
+<div class="pitfall">
+  <div class="pitfall-num">PITFALL 07 · Synchronized DB approach</div>
+  <div class="pitfall-title">Failover causes data duplication inside the database</div>
+  <div class="pitfall-body">
+    With external DB replication, when primary fails and backup takes over, in-flight writes can land twice. The Prague team flags that "proper queries" are needed to handle this, but the design doesn't specify them.
+  </div>
+  <div class="pitfall-quote">"Update of data when switch happened can lead to duplication of data inside DB → need to have proper queries."</div>
+</div>
+
+<div class="pitfall">
+  <div class="pitfall-num">PITFALL 08 · Application separation approach</div>
+  <div class="pitfall-title">Trader search transferred to external project — loss of control</div>
+  <div class="pitfall-body">
+    Splitting the cache means handing off the trader query path to another team's project (TC2). This adds organisational dependency and removes our team's ability to optimise for our specific access patterns.
+  </div>
+  <div class="pitfall-quote">"Trader search would be transferred to TC2 project → data no longer under our control."</div>
+</div>
+
+<div class="pitfall">
+  <div class="pitfall-num">PITFALL 09 · Application separation approach</div>
+  <div class="pitfall-title">Regional rollout uncertainty</div>
+  <div class="pitfall-body">
+    The Prague team notes uncertainty about whether the split can be done for one region only. For a global trading platform, asymmetric architectures across regions create operational complexity and add risk to deployment sequencing.
+  </div>
+  <div class="pitfall-quote">"Not sure if this can be done for one region only."</div>
+</div>
+
+<div class="pitfall">
+  <div class="pitfall-num">PITFALL 10 · Common to all three approaches</div>
+  <div class="pitfall-title">Distributed cache option was never seriously evaluated</div>
+  <div class="pitfall-body">
+    The 2024 design considered Kafka, local files, and application separation. It did not evaluate distributed in-memory data grids (Hazelcast, Infinispan, Coherence) as a primary storage option. My August 2024 comment raised this gap; it received no response. With 20 months of organisational evolution and concrete Hazelcast adoption at Barclays since then, this gap can now be closed.
+  </div>
+</div>
+
+<div class="callout amber">
+<div class="callout-title">Net assessment of EU proposal</div>
+The Prague design is technically thorough but each approach trades one problem for another. Kafka solves durability but creates 3× storage and slow restart. Local file solves restart but breaks resharding. Application separation solves heap but loses control. <strong>None of the three solves the core problem cleanly.</strong> A distributed cache approach addresses all three pain points simultaneously, which is why it warrants formal proposal now.
+</div>
+</section>
+
+<!-- 5 OPTIONS -->
+<section id="options">
+<h2>5 · Storage technology options</h2>
+<p>This proposal evaluates six concrete options. The first three were covered (or implicitly considered) in the 2024 EU design. The latter three — distributed in-memory data grids — represent the gap this proposal fills.</p>
+
+<div class="tbl-wrap">
+<table>
+  <tr>
+    <th>Option</th>
+    <th>Pattern</th>
+    <th>Heap relief</th>
+    <th>Restart speed</th>
+    <th>Cross-symbol queries</th>
+    <th>Intraday resharding</th>
+    <th>Verdict</th>
+  </tr>
+  <tr>
+    <td>Kafka as store</td>
+    <td>Event log replay</td>
+    <td><span class="tag warn">Partial</span></td>
+    <td><span class="tag risk">Slow</span></td>
+    <td><span class="tag risk">No</span></td>
+    <td><span class="tag warn">Complicated</span></td>
+    <td><span class="tag warn">EU's choice — flawed</span></td>
+  </tr>
+  <tr>
+    <td>Embedded DB</td>
+    <td>Local persistence</td>
+    <td><span class="tag ok">Yes</span></td>
+    <td><span class="tag ok">Fast</span></td>
+    <td><span class="tag risk">Blob storage</span></td>
+    <td><span class="tag risk">No</span></td>
+    <td><span class="tag warn">Restart fast but inflexible</span></td>
+  </tr>
+  <tr>
+    <td>Synchronized DB (SQL Server HA)</td>
+    <td>External RDBMS</td>
+    <td><span class="tag ok">Yes</span></td>
+    <td><span class="tag ok">Fast</span></td>
+    <td><span class="tag ok">SQL queries</span></td>
+    <td><span class="tag info">Vendor-managed</span></td>
+    <td><span class="tag warn">Latency too high for hot path</span></td>
+  </tr>
+  <tr>
+    <td><strong>Hazelcast</strong></td>
+    <td>Distributed in-memory grid</td>
+    <td><span class="tag ok">Yes</span></td>
+    <td><span class="tag ok">Fast</span></td>
+    <td><span class="tag ok">Predicates &amp; SQL</span></td>
+    <td><span class="tag ok">Native rebalance</span></td>
+    <td><span class="tag ok"><strong>Recommended</strong></span></td>
+  </tr>
+  <tr>
+    <td>Infinispan / RHDG</td>
+    <td>Distributed in-memory grid</td>
+    <td><span class="tag ok">Yes</span></td>
+    <td><span class="tag ok">Fast</span></td>
+    <td><span class="tag ok">Ickle queries, ProtoStream</span></td>
+    <td><span class="tag ok">Native rebalance</span></td>
+    <td><span class="tag info">Strong alternative</span></td>
+  </tr>
+  <tr>
+    <td>Oracle Coherence</td>
+    <td>Distributed in-memory grid</td>
+    <td><span class="tag ok">Yes</span></td>
+    <td><span class="tag ok">Fast</span></td>
+    <td><span class="tag ok">CohQL, entry processors</span></td>
+    <td><span class="tag ok">Native rebalance</span></td>
+    <td><span class="tag warn">Mature but legacy licensing</span></td>
+  </tr>
+</table>
+</div>
+</section>
+
+<!-- 6 BARCLAYS STATE -->
+<section id="barclays-state">
+<h2>6 · Barclays current state evidence</h2>
+<p>Technology selection should be driven by Barclays' actual current state, not by external preference. The internal Confluence research below establishes which products are demonstrably in use.</p>
+
+<h3>Hazelcast — actively deployed in 2026</h3>
+<div class="callout green">
+<div class="callout-title">Verified · DAINO Confluence Space</div>
+<strong>Embedded Hazelcast with Spring Boot &amp; Kubernetes</strong> — created by Pathuru, Neelima : USCB COO. Last updated <strong>March 30, 2026</strong> (5 weeks ago). Detailed production-ready spike including Maven dependencies, <code>hazelcast.yaml</code> configuration, Kubernetes headless service, RBAC for pod discovery, and full Deployment specifications. This is current 2026 Hazelcast usage at Barclays.
+</div>
+
+<h3>Hazelcast — historical evaluation</h3>
+<div class="callout blue">
+<div class="callout-title">DATACACHE Confluence Space (2013, dated)</div>
+The original evaluation page lists pricing structure (per-node subscription) and confirms an existing relationship: <em>"We have annual subscription pricing model."</em> Listed customer references include <strong>Morgan Stanley (~20 nodes), Highbridge Capital (JP Morgan), HSBC London headquarters</strong> — peer trading institutions. The 2013 prices ($3K/$5K/$6K per node/year) are obsolete but the structure persists.
+</div>
+
+<h3>Infinispan — historical evaluation only</h3>
+<div class="callout amber">
+<div class="callout-title">DATACACHE Confluence Space (2013, dated)</div>
+The 2013 evaluation page lists Infinispan with several limitations that are now obsolete: "no aggregators", "Hot Rod limited functionality", "Query API only via embedded API". These limitations have been resolved in modern Infinispan (versions 12+). The 2013 evaluation conclusion is no longer valid. <strong>However, no recent Confluence evidence exists of active Infinispan deployment at Barclays.</strong>
+</div>
+
+<h3>Coherence — Prague team comment thread (2024)</h3>
+<div class="callout purple">
+<div class="callout-title">Blackbird Confluence Space</div>
+My August 2024 comment on the V2 design suggested Coherence as a distributed cache option. The comment received no reply. Coherence may exist somewhere in Barclays as legacy infrastructure but no current evidence of strategic adoption.
+</div>
+
+<h3>Other products in DATACACHE space</h3>
+<p>The DATACACHE space sidebar lists evaluation pages for: Couchbase, Extreme Scale, Gemfire, Gigaspaces, GridGain (version 7.5.4 explicitly noted — suggesting more recent activity), MongoDB 3.2, Redis, and Terracotta. Of these, GridGain's versioned title hints it's actively maintained; the others appear historical.</p>
+
+<div class="callout green">
+<div class="callout-title">Conclusion from evidence</div>
+<strong>Hazelcast is the only distributed in-memory data grid with verified 2026 production deployment at Barclays.</strong> Infinispan is a credible alternative but lacks current adoption evidence. This makes Hazelcast the lower-risk recommendation from a Barclays-specific operational perspective.
+</div>
+</section>
+
+<!-- 7 RECOMMENDATION -->
+<section id="recommendation">
+<h2 class="success">7 · Recommended approach: Hazelcast tiered architecture</h2>
+
+<p>Adopt a tiered storage model where Neeve TC retains the active write path with intelligent eviction, and Hazelcast holds the full intraday dataset for query access. The existing message-driven query interface (used by Batman, GUI, OMS) is preserved entirely — Hazelcast is a TC-internal implementation detail.</p>
+
+<h3>Why Hazelcast over the EU proposals</h3>
+<div class="vs-grid">
+  <div class="vs-card lose">
+    <div class="vs-label">Kafka-based (EU proposal)</div>
+    Slow restart, 3× data duplication, complicated resharding, no native query support. Acknowledged in EU's own cons.
+  </div>
+  <div class="vs-card win">
+    <div class="vs-label">Hazelcast (this proposal)</div>
+    Fast restart (data already in cluster), native indexed queries, partition rebalance built in, single source of truth.
+  </div>
+  <div class="vs-card lose">
+    <div class="vs-label">Embedded DB (EU proposal)</div>
+    Cannot add nodes intraday. Blob storage prevents cross-symbol queries. Restoration depends on local disk integrity.
+  </div>
+  <div class="vs-card win">
+    <div class="vs-label">Hazelcast (this proposal)</div>
+    Add cluster nodes any time. Indexed by accountId, deskId, symbol, status. Distributed redundancy by design.
+  </div>
+  <div class="vs-card lose">
+    <div class="vs-label">Application separation (EU proposal)</div>
+    Hand off trader query path to TC2 project. Loss of control. Regional rollout uncertain.
+  </div>
+  <div class="vs-card win">
+    <div class="vs-label">Hazelcast (this proposal)</div>
+    Internal architectural change. No project boundaries crossed. Same team retains ownership.
+  </div>
+</div>
+
+<h3>Why Hazelcast over Infinispan</h3>
+<ul>
+  <li><strong>Verified Barclays adoption:</strong> Production deployment in USCB (March 2026)</li>
+  <li><strong>Internal expertise:</strong> Operational knowledge already exists in the firm</li>
+  <li><strong>Trading-bank case studies:</strong> Morgan Stanley, HSBC, JP Morgan/Highbridge</li>
+  <li><strong>Learning ecosystem:</strong> More books, courses, community content available</li>
+  <li><strong>Off-heap "Elastic Memory":</strong> Mature feature for trading workloads (avoids GC pressure)</li>
+  <li><strong>Lower procurement friction:</strong> Existing relationship vs. negotiating a new vendor</li>
+</ul>
+
+<p>Infinispan remains a strong technical alternative — see <a href="#hazelcast-vs-infinispan">section 12</a> for full comparison. The recommendation is decision-conditional: <em>if internal verification reveals an active Red Hat Data Grid deployment, Infinispan should be re-evaluated as a peer option.</em></p>
+</section>
+
+<!-- 8 ARCHITECTURE -->
+<section id="architecture">
+<h2>8 · Detailed architecture</h2>
+
+<div class="diagram">┌─────────────────────────────────────────────────────────┐
+│  OMS Cluster (Neeve, sharded by symbol — unchanged)     │
+│  [OMS A 0x00-3F] [OMS B 0x40-7F] [OMS C] [OMS D]        │
+└────────────────────────┬────────────────────────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│  Solace Messaging Fabric (unchanged)                    │
+│                                                          │
+│  Topics:                                                 │
+│  ├── trading/orders/events         (OMS → TC)           │
+│  ├── trading/tc/query/request      (Batman/GUI → TC)    │
+│  └── trading/tc/query/response/{id}(TC → Batman stream) │
+└──┬──────────────────────────────────────────▲───────────┘
+   │ events                                   │ query req/resp
+   ▼                                          │
+┌─────────────────────────────────────────────────────────┐
+│  Transaction Cache (Neeve P+B — refactored)            │
+│  ┌─ Primary ─────────┐    ┌─ Backup ─────────┐         │
+│  │ activeOrders      │    │ activeOrders     │         │
+│  │ (working only)    │    │ (mirror)         │         │
+│  │                   │    │                  │         │
+│  │ overnightOrders   │    │ overnightOrders  │         │
+│  │ (GTC/GTD ~1000)   │    │ (mirror)         │         │
+│  │                   │    │                  │         │
+│  │ Hazelcast Client ─┐    │ (no HZ writes    │         │
+│  │ (writes only)     │    │  from backup)    │         │
+│  │                   │    │                  │         │
+│  │ .rdat journal     │    │ .rdat journal    │         │
+│  └───────────────────┘    └──────────────────┘         │
+└────────────────────────┼────────────────────────────────┘
+                         │ Hot Rod / Native client
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│  Hazelcast Cluster (NEW — separate JVMs)                │
+│  [Node 1] [Node 2] [Node 3] [Node 4]                    │
+│                                                          │
+│  IMap: "todays-orders"                                  │
+│  ├── Distribution: partitioned across nodes             │
+│  ├── Backup count: 1 (primary + 1 backup per partition) │
+│  ├── Storage: off-heap (Elastic Memory)                 │
+│  ├── Indexes: accountId, deskId, symbol, status, TIF    │
+│  ├── Eviction: cleared at EOD                           │
+│  └── Near-cache: optional on TC client side             │
+└─────────────────────────────────────────────────────────┘</div>
+
+<h3>Component responsibilities</h3>
+<div class="tbl-wrap">
+<table>
+  <tr><th>Component</th><th>Responsibility</th><th>Status</th></tr>
+  <tr>
+    <td>OMS agents</td>
+    <td>Sharded order processing per symbol (unchanged)</td>
+    <td><span class="tag ok">Existing</span></td>
+  </tr>
+  <tr>
+    <td>Solace</td>
+    <td>Event transport, query req/resp (unchanged)</td>
+    <td><span class="tag ok">Existing</span></td>
+  </tr>
+  <tr>
+    <td>TC Primary</td>
+    <td>Consume events, update local state, mirror to Hazelcast, evict terminal orders</td>
+    <td><span class="tag info">Refactored</span></td>
+  </tr>
+  <tr>
+    <td>TC Backup</td>
+    <td>Consume same events, maintain shadow state. Does NOT write to Hazelcast</td>
+    <td><span class="tag info">Refactored</span></td>
+  </tr>
+  <tr>
+    <td>Hazelcast cluster</td>
+    <td>Distributed off-heap store of full intraday dataset; serves Neeve's query handler</td>
+    <td><span class="tag new">New component</span></td>
+  </tr>
+  <tr>
+    <td>Batman / GUI / dfd-command</td>
+    <td>Query via existing Solace request/response protocol</td>
+    <td><span class="tag ok">Unchanged</span></td>
+  </tr>
+</table>
+</div>
+</section>
+
+<!-- 9 QUERY INTERFACE -->
+<section id="query-interface">
+<h2>9 · Message-driven query interface</h2>
+
+<p><strong>Critical compatibility constraint:</strong> Batman and GUI clients do not use a library. They send query messages to Solace topics and receive response streams (header followed by event stream), the same pattern used by OMS event replay. The Hazelcast cluster is therefore a TC-internal implementation detail. <strong>External clients see zero API changes.</strong></p>
+
+<div class="diagram">Query flow:
+
+  Batman                  Solace                   TC Primary               Hazelcast
+    │                       │                          │                        │
+    │── OrderQueryRequest ──▶                          │                        │
+    │                       │── deliver to TC ────────▶│                        │
+    │                       │                          │── route by scope ─────▶│
+    │                       │                          │       (cross-symbol)   │
+    │                       │                          │◀── result list ────────│
+    │                       │                          │                        │
+    │                       │◀── ResponseHeader (count)│                        │
+    │◀──────────────────────│                          │                        │
+    │                       │◀── OrderEvent stream ────│                        │
+    │◀──────────────────────│                          │                        │
+    │                       │◀── ResponseFooter ───────│                        │
+    │◀──────────────────────│                          │                        │</div>
+
+<h3>Query routing logic</h3>
+<pre><span class="c">// QueryRequestHandler.onQueryRequest(OrderQueryRequest req)</span>
+
+QueryScope scope = determineScope(req);
+
+<span class="k">switch</span> (scope) {
+    <span class="k">case</span> OVERNIGHT:
+        <span class="c">// GTC/GTD lookup — local Neeve overnight map (~1000 orders)</span>
+        results = overnightOrders.values().stream()
+            .filter(matchTimeInForce(req))
+            .filter(matchSymbols(req))
+            .toList();
+        <span class="k">break</span>;
+        
+    <span class="k">case</span> ACTIVE:
+        <span class="c">// Working order lookup — local Neeve active map (~50-200k)</span>
+        results = activeOrders.values().stream()
+            .filter(matchSymbols(req))
+            .filter(matchDesk(req))
+            .toList();
+        <span class="k">break</span>;
+        
+    <span class="k">case</span> FULL_DAY:
+        <span class="c">// Cross-symbol or all-state query — Hazelcast IMap query</span>
+        Predicate p = <span class="t">Predicates</span>.and(
+            <span class="t">Predicates</span>.equal(<span class="s">"deskId"</span>, req.getDeskId()),
+            <span class="t">Predicates</span>.in(<span class="s">"symbol"</span>, req.getSymbols())
+        );
+        results = ordersIMap.values(p);
+        <span class="k">break</span>;
+}
+
+<span class="c">// Stream response back through Solace (existing pattern)</span>
+publisher.send(replyTopic, <span class="k">new</span> ResponseHeader(req.getId(), results.size()));
+results.forEach(o -> publisher.send(replyTopic, toEvent(o)));
+publisher.send(replyTopic, <span class="k">new</span> ResponseFooter(req.getId()));</pre>
+</section>
+
+<!-- 10 TIERED MODEL -->
+<section id="tiered-model">
+<h2>10 · Tiered memory model</h2>
+
+<div class="diagram">Tier 1: Neeve activeOrders (Java Map, on-heap)
+  └── Working orders only (NEW, WORKING, PARTIALLY_FILLED)
+  └── Evicted on terminal state (FILLED, CANCELLED, REJECTED, EXPIRED)
+  └── Evicted on idle timeout
+  └── Evicted on memory watermark (LRU safety net)
+  └── Size: ~50-200k orders ≈ 2-4 GB heap
+  └── Mirrored on Backup via Neeve native HA
+
+Tier 2: Neeve overnightOrders (Java Map, on-heap)
+  └── GTC, GTD, day+ orders
+  └── Loaded from JSON flat file at startup
+  └── Stays local (small ~1000 orders)
+  └── Persisted at EOD to flat file
+  └── Mirrored on Backup
+
+Tier 3: Hazelcast IMap "todays-orders" (off-heap, distributed)
+  └── ALL of today's orders regardless of state
+  └── Populated by Neeve Primary on every order event
+  └── Indexed: accountId, deskId, symbol, status, TIF
+  └── Cleared at EOD
+  └── Backup count: 1 (primary + backup partition per node)
+  └── Size: full 1M+ orders, distributed across cluster
+
+Tier 4: Neeve .rdat journal (append-only, durable)
+  └── Audit trail of every event
+  └── Used for disaster recovery only
+  └── Not used in normal startup (flat file is)
+
+Tier 5: Overnight flat file (JSON, ~1000 orders)
+  └── Carry-over to next trading day (unchanged from today)</div>
+
+<h3>Eviction rules (combined)</h3>
+<ol>
+  <li><strong>Terminal state:</strong> Filled, Cancelled, Rejected, Expired → evict immediately after final event written</li>
+  <li><strong>Idle timeout:</strong> No activity for N minutes (configurable) → evict</li>
+  <li><strong>Memory pressure:</strong> If <code>activeOrders.size()</code> exceeds high watermark → evict oldest (LRU safety net)</li>
+</ol>
+
+<div class="callout amber">
+<div class="callout-title">Atomicity rule</div>
+Always confirm Hazelcast write succeeded BEFORE removing from local Neeve map. Briefly in both = acceptable (same data). Never in neither = unacceptable. The eviction handler uses synchronous put for terminal-state writes; async put for in-flight updates.
+</div>
+</section>
+
+<!-- 11 SCENARIOS -->
+<section id="scenarios">
+<h2>11 · Failure &amp; recovery scenarios</h2>
+
+<div class="scenario">
+  <div class="scenario-header">
+    <span class="scenario-num">SCENARIO 01 · Normal operation</span>
+    <span class="tag ok">Steady state</span>
+  </div>
+  <p>OMS publishes order events. TC Primary consumes, updates <code>activeOrders</code>, writes to Hazelcast. TC Backup consumes same events, mirrors local state, no Hazelcast writes. Batman queries flow through Solace request/response, served from local maps or Hazelcast based on scope. <code>.rdat</code> journals every event on both nodes.</p>
+</div>
+
+<div class="scenario">
+  <div class="scenario-header">
+    <span class="scenario-num">SCENARIO 02 · TC Primary crashes</span>
+    <span class="tag warn">HA event</span>
+  </div>
+  <div class="timeline">
+    <div class="timeline-step">
+      <div class="step-time">T0 + 0s</div>
+      <div class="step-title">Primary failure detected</div>
+      Neeve cluster manager detects heartbeat loss. Backup begins promotion. Hazelcast unaffected — its cluster is independent.
+    </div>
+    <div class="timeline-step t2">
+      <div class="step-time">T0 + ~3s</div>
+      <div class="step-title">Backup promotes to Primary</div>
+      Local <code>activeOrders</code> map already current (mirrored). New Primary begins writing to Hazelcast. Brief async window: in-flight Hazelcast writes from old Primary may have been lost.
+    </div>
+    <div class="timeline-step t3">
+      <div class="step-time">T0 + ~5s</div>
+      <div class="step-title">Reconciliation</div>
+      New Primary iterates its <code>activeOrders</code> map, confirms each order is in Hazelcast, re-writes any missing. Bounded time (seconds for 50-200k orders).
+    </div>
+    <div class="timeline-step t4">
+      <div class="step-time">T0 + ~10s</div>
+      <div class="step-title">Service resumes</div>
+      OMS event flow continues. Batman queries continue (Hazelcast was never affected). System operates with no Backup until restoration.
+    </div>
+  </div>
+</div>
+
+<div class="scenario">
+  <div class="scenario-header">
+    <span class="scenario-num">SCENARIO 03 · Restoring failed node as new Backup</span>
+    <span class="tag info">Recovery procedure</span>
+  </div>
+  <div class="timeline">
+    <div class="timeline-step">
+      <div class="step-time">Phase A · ~2 min</div>
+      <div class="step-title">Boot &amp; isolate</div>
+      Provision/restart host. Start Neeve TC standalone — NOT registered as backup yet. Verify connectivity to Solace, Hazelcast, peer Primary. Hazelcast writes disabled.
+    </div>
+    <div class="timeline-step">
+      <div class="step-time">Phase B · 1-10 min</div>
+      <div class="step-title">Replay <code>.rdat</code> + Solace catch-up</div>
+      Replay local <code>.rdat</code> with eviction logic applied inline (so heap doesn't explode). Subscribe to Solace from appropriate offset. Process events through normal handlers. Continue until lag &lt; 100ms.
+    </div>
+    <div class="timeline-step">
+      <div class="step-time">Phase C · ~1 min</div>
+      <div class="step-title">Register as Backup</div>
+      Register with Neeve cluster. Verify mirroring active. Run optional state checksum vs. Primary.
+    </div>
+    <div class="timeline-step t4">
+      <div class="step-time">Phase D · ~2 min</div>
+      <div class="step-title">Validate HA</div>
+      Send synthetic order. Verify both P&amp;B receive, only Primary writes to Hazelcast. Confirm Lumino dashboard healthy. Sign off.
+    </div>
+  </div>
+  <p style="margin-top:.6rem; font-size:.85rem; color:var(--muted);"><strong>Total: ~15 minutes typical, up to 45 worst case.</strong> No failback — the promoted Backup remains Primary; restored node becomes Backup.</p>
+</div>
+
+<div class="scenario">
+  <div class="scenario-header">
+    <span class="scenario-num">SCENARIO 04 · Both Neeve TC nodes fail</span>
+    <span class="tag risk">Disaster recovery</span>
+  </div>
+  <p>Total TC outage. <strong>However, Hazelcast cluster remains operational.</strong> Batman/GUI queries continue to be served (degraded — no live event updates, but historical view intact). Recovery: provision Neeve hosts, replay <code>.rdat</code> from latest snapshot. Hazelcast can be used as a fast-recovery source for Neeve <code>activeOrders</code> reload (read all entries back into local map at boot) — eliminates the slow Kafka-replay problem the EU proposal had.</p>
+</div>
+
+<div class="scenario">
+  <div class="scenario-header">
+    <span class="scenario-num">SCENARIO 05 · Hazelcast node failure</span>
+    <span class="tag info">Self-healing</span>
+  </div>
+  <p>Hazelcast cluster has backup partitions on different nodes (numBackups=1). Failed node's data is automatically promoted on its backup-holding peer. Cluster rebalances. Neeve TC continues operating — Hot Rod / smart client routes around the failed node automatically. No human intervention required.</p>
+</div>
+
+<div class="scenario">
+  <div class="scenario-header">
+    <span class="scenario-num">SCENARIO 06 · Total Hazelcast cluster failure</span>
+    <span class="tag risk">Rare but possible</span>
+  </div>
+  <p>Batman/GUI queries that need cross-symbol or full-day view fail. Neeve TC continues operating (writes &amp; <code>.rdat</code> unaffected). Recovery path: rebuild Hazelcast cluster, then have Neeve Primary scan its <code>activeOrders</code> + replay recent <code>.rdat</code> events to repopulate. Estimated time: minutes for partial rebuild, longer for full historical reconstruction.</p>
+</div>
+
+<div class="scenario">
+  <div class="scenario-header">
+    <span class="scenario-num">SCENARIO 07 · Solace outage</span>
+    <span class="tag risk">Platform-level</span>
+  </div>
+  <p>Out of TC scope — Solace is a platform-wide dependency. Trading halts firm-wide. Neeve TC has nothing to consume; Hazelcast retains last known state. Recovery is platform team responsibility.</p>
+</div>
+
+<div class="scenario">
+  <div class="scenario-header">
+    <span class="scenario-num">SCENARIO 08 · End-of-day</span>
+    <span class="tag ok">Daily routine</span>
+  </div>
+  <p>17:00 EOD process: identify still-open orders (GTC/GTD/working), write to overnight flat file. Clear Hazelcast cache (<code>cache.clear()</code> all nodes). Flush Neeve <code>activeOrders</code>. Roll <code>.rdat</code>. System idle. Next morning 07:00: Neeve reads overnight flat file → populates local maps → Primary writes to Hazelcast → ready for market open.</p>
+</div>
+
+<div class="scenario">
+  <div class="scenario-header">
+    <span class="scenario-num">SCENARIO 09 · Intraday volume spike</span>
+    <span class="tag ok">Capacity scaling</span>
+  </div>
+  <p><strong>Unique advantage over EU proposals:</strong> add Hazelcast nodes during the trading day. Hazelcast rebalances partitions automatically. No restart, no resharding ceremony. Direct response to one of the EU design's "complicated" weaknesses.</p>
+</div>
+</section>
+
+<!-- 12 HZ vs INFINISPAN -->
+<section id="hazelcast-vs-infinispan">
+<h2>12 · Hazelcast vs Infinispan deep dive</h2>
+
+<p>Both products are technically suitable. The decision is driven primarily by Barclays' current state and operational fit, not technical merit. This section provides the side-by-side detail to defend the choice or pivot if internal verification reveals different facts.</p>
+
+<div class="tbl-wrap">
+<table>
+  <tr>
+    <th>Dimension</th>
+    <th>Hazelcast</th>
+    <th>Infinispan / Red Hat Data Grid</th>
+  </tr>
+  <tr>
+    <td>Barclays adoption (2026)</td>
+    <td><span class="tag ok">Verified — USCB COO team</span></td>
+    <td><span class="tag warn">Not verified — needs check</span></td>
+  </tr>
+  <tr>
+    <td>Procurement path</td>
+    <td><span class="tag ok">Existing subscription likely</span></td>
+    <td><span class="tag info">Possibly under Red Hat agreement</span></td>
+  </tr>
+  <tr>
+    <td>Java native</td>
+    <td><span class="tag ok">Yes</span></td>
+    <td><span class="tag ok">Yes</span></td>
+  </tr>
+  <tr>
+    <td>Distribution mode</td>
+    <td>Partitioned IMap, configurable backups</td>
+    <td>DIST_SYNC, configurable owners</td>
+  </tr>
+  <tr>
+    <td>Off-heap storage</td>
+    <td>Elastic Memory (Enterprise)</td>
+    <td>Off-heap supported (OSS)</td>
+  </tr>
+  <tr>
+    <td>Query API</td>
+    <td>Predicates, SQL, JSON</td>
+    <td>Ickle query, Lucene indexing</td>
+  </tr>
+  <tr>
+    <td>Native protobuf</td>
+    <td>Custom serializer</td>
+    <td><span class="tag ok">First-class (ProtoStream)</span></td>
+  </tr>
+  <tr>
+    <td>Near-cache</td>
+    <td>Built-in</td>
+    <td>L1 cache (DIST mode only)</td>
+  </tr>
+  <tr>
+    <td>Trading-bank case studies</td>
+    <td><span class="tag ok">Morgan Stanley, HSBC, JP Morgan/Highbridge</span></td>
+    <td><span class="tag warn">Less prominent in trading</span></td>
+  </tr>
+  <tr>
+    <td>Public learning ecosystem</td>
+    <td><span class="tag ok">Strong — books, courses, talks</span></td>
+    <td><span class="tag warn">Thinner — mostly Red Hat docs</span></td>
+  </tr>
+  <tr>
+    <td>Open source license</td>
+    <td>Community Edition (Apache 2.0)</td>
+    <td>Apache 2.0 (full)</td>
+  </tr>
+  <tr>
+    <td>Discovery on K8s</td>
+    <td>Hazelcast K8s plugin</td>
+    <td>RHDG Operator</td>
+  </tr>
+  <tr>
+    <td>Guice integration</td>
+    <td>Pure Java client — clean</td>
+    <td>Pure Java client — clean</td>
+  </tr>
+</table>
+</div>
+
+<h3>Decision flow</h3>
+<pre>
+<span class="h">IF</span> Hazelcast confirmed actively deployed at Barclays
+   <span class="h">AND</span> existing subscription covers expansion
+       → <span class="k">CHOOSE Hazelcast</span> (lowest organisational friction)
+
+<span class="h">ELSE IF</span> Red Hat Data Grid available under Red Hat agreement
+        <span class="h">AND</span> protobuf alignment is high priority
+            → <span class="k">CHOOSE Infinispan</span> (best technical alignment)
+
+<span class="h">ELSE IF</span> Both available
+        → <span class="k">CHOOSE Hazelcast</span> (USCB precedent + trading case studies)
+
+<span class="h">ELSE</span>
+   → escalate procurement question to architecture
+</pre>
+
+<div class="callout blue">
+<div class="callout-title">Honest framing for review</div>
+The Hazelcast recommendation is conditional on confirming current licensing and deployment status. If due diligence reveals Hazelcast is no longer covered or RHDG is the firm's strategic data grid choice, this proposal pivots cleanly to Infinispan with minimal architectural change. <strong>The architecture is not vendor-locked at the design level.</strong>
+</div>
+</section>
+
+<!-- 13 MIGRATION -->
+<section id="migration">
+<h2>13 · Migration plan</h2>
+
+<div class="timeline">
+  <div class="timeline-step">
+    <div class="step-time">Phase 1 · 2-3 weeks</div>
+    <div class="step-title">Instrumentation &amp; verification</div>
+    Profile current TC heap, eviction patterns, query distribution. Confirm Hazelcast subscription/deployment status with infrastructure architecture. Engage USCB team on lessons learned. Confirm OpenShift/RHEL platform availability for Hazelcast cluster.
+  </div>
+  <div class="timeline-step">
+    <div class="step-time">Phase 2 · 4-6 weeks</div>
+    <div class="step-title">Hazelcast client integration in Neeve TC</div>
+    Add Hazelcast Hot Rod / native client dependency. Implement <code>HazelcastWriter</code> with Guice binding. Define Order schema for IMap. Set up indexes. Build <code>EvictionManager</code>. Run in shadow mode (writes to Hazelcast but reads still from local map).
+  </div>
+  <div class="timeline-step">
+    <div class="step-time">Phase 3 · 4-6 weeks</div>
+    <div class="step-title">Query handler refactor</div>
+    Refactor <code>QueryRequestHandler</code> to route by scope (active / overnight / full-day). Implement Hazelcast predicate queries. Validate against existing Batman query patterns in UAT. Ensure response stream format unchanged.
+  </div>
+  <div class="timeline-step">
+    <div class="step-time">Phase 4 · 3-4 weeks</div>
+    <div class="step-title">Eviction enabled, heap reduction</div>
+    Enable eviction logic in production. Monitor heap reduction. Verify Hazelcast performance under full load. Run failover drills. Validate restore time.
+  </div>
+  <div class="timeline-step">
+    <div class="step-time">Phase 5 · 2-3 weeks</div>
+    <div class="step-title">Stabilisation &amp; runbook</div>
+    Operational runbooks. Monitoring/alerting. Disaster recovery drill. Documentation handover. Training for support team.
+  </div>
+</div>
+
+<p style="margin-top:.6rem; font-size:.85rem; color:var(--muted);"><strong>Total: ~4-5 months</strong> from kickoff to stable production.</p>
+</section>
+
+<!-- 14 OPEN QUESTIONS -->
+<section id="open-questions">
+<h2>14 · Open questions for May</h2>
+
+<h3>Procurement &amp; licensing</h3>
+<ul class="checklist">
+  <li>Confirm Hazelcast enterprise subscription is active at Barclays</li>
+  <li>Confirm pricing model (per-node, per-cluster) for capacity planning</li>
+  <li>Confirm Red Hat Data Grid availability under Red Hat enterprise agreement (fallback option)</li>
+  <li>Identify procurement contact for cluster sizing approval</li>
+</ul>
+
+<h3>Internal expertise &amp; collaboration</h3>
+<ul class="checklist">
+  <li>Engage USCB COO team (Pathuru, Neelima) on Hazelcast operational lessons</li>
+  <li>Identify Hazelcast vendor relationship owner at Barclays</li>
+  <li>Verify Hazelcast cluster deployment pattern: separate cluster vs. embedded mode</li>
+  <li>Confirm OpenShift platform team support for Hazelcast deployment</li>
+</ul>
+
+<h3>Production measurement</h3>
+<ul class="checklist">
+  <li>Actual current Neeve TC heap size and growth rate</li>
+  <li>Distribution of query types (by-symbol vs. by-account vs. cross-symbol)</li>
+  <li>Average order object size (heap dump histogram)</li>
+  <li>Peak intraday order count and YoY growth trend</li>
+  <li>Current <code>.rdat</code> snapshot frequency and replay duration</li>
+</ul>
+
+<h3>Integration verification</h3>
+<ul class="checklist">
+  <li>Exact Solace topic structure for Batman query request/response</li>
+  <li>Query message schema (filterable fields)</li>
+  <li>Response protocol (header → events → footer? Pagination? Streaming?)</li>
+  <li>Other clients besides Batman/GUI (risk systems? automated tools?)</li>
+  <li>OMS dependency on TC for GTC/GTD long-lived order retrieval</li>
+</ul>
+
+<h3>Design decisions to finalise</h3>
+<ul class="checklist">
+  <li>Eviction thresholds (idle minutes, watermark size)</li>
+  <li>Hazelcast cluster size (start with 4 nodes? 6?)</li>
+  <li>Indexing strategy — which fields, trade-off vs. write speed</li>
+  <li>Sync vs async Hazelcast writes (per operation type)</li>
+  <li>Reconciliation protocol on Primary promotion</li>
+  <li>Recovery SLA — business-acceptable RTO target</li>
+  <li>Whether to expose any direct query API to power users (likely no)</li>
+</ul>
+</section>
+
+<hr>
+
+<div class="callout green">
+<div class="callout-title">Closing statement</div>
+The Prague team's 2024 V2 design identified the right problem but each of their three approaches trades one weakness for another. None solves heap, restart, and resharding cleanly. A distributed in-memory data grid does — and Hazelcast is the strongest candidate at Barclays specifically, given verified 2026 deployment in USCB, established trading-bank case studies at peer institutions, and an existing licensing relationship.<br><br>
+<strong>This proposal preserves every working component (Neeve, Solace, .rdat, message-driven query interface) and adds one strategically-aligned component (Hazelcast) to absorb the heap and query growth.</strong> External app compatibility is preserved entirely. The architecture is conservative, defensible, and aligned with the firm's actual technology direction.
+</div>
+
+<div class="meta-footer">
+Working draft for design review · Author: Marozas, Zilvinas : IT (WHP) · Built upon prior work by Kovarik, Tomas : IT (PRG)
+</div>
+
+</div>
+</body>
+</html>
