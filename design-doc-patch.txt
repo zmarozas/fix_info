@@ -1,0 +1,87 @@
+================================================================
+OPTIONPRICER GATEWAY DESIGN -- PATCH NOTES
+After conversation with Mark: ProductId is client-defined,
+encode RIC into it, fully stateless. No CorrelationRegistry.
+
+Apply these 3 edits to the existing Confluence page.
+================================================================
+
+
+================================================================
+EDIT 1 -- Section 9 (Component structure)
+================================================================
+
+In the component layout code block, FIND this line:
+
+    |   |-- CorrelationRegistry         transient in-flight map (if needed, see note below)
+
+DELETE the whole line.
+
+(That class is no longer needed -- no in-memory map required.)
+
+
+================================================================
+EDIT 2 -- Section 9, the long correlation subsection
+================================================================
+
+DELETE the entire subsection currently titled:
+
+    How we match updates back to the right subscription -- design decision
+
+That means everything from that heading down to where Section 10
+("Testing strategy") begins. Heading, the two numbered options
+(Stateless / Transient map), "What decides it", "Split of what
+to confirm vs decide", and "Default working assumption..." --
+all of it goes.
+
+REPLACE with the following shorter version:
+
+----------------------- BEGIN REPLACEMENT -----------------------
+
+### How we match updates back to the right subscription
+
+`ProductId` on the BiFrost side is a **client-defined free-form string** -- BiFrost doesn't interpret it, just echoes it back. The bridge encodes the RIC (or whatever identifier the snapshot needs to route on) into `ProductId` when building the `PricingRequest`. On ongoing updates, `ProductId` comes back on the topic (`Pricing/GREEKS/{UnderlyingName}/{ProductId}`) and the bridge reads it from there to publish the snapshot to the right Blackbird destination.
+
+This makes the bridge **fully stateless** -- no in-memory registry or correlation map. Confirmed with Mark; matches the BiFrost design intent.
+
+*Small thing to verify during build:* whether `ProductId` is also present in the protobuf message body, or only on the Solace topic. JCSMP exposes the topic on every received message either way, so it's not a blocker -- just a one-line implementation detail.
+
+------------------------ END REPLACEMENT ------------------------
+
+
+================================================================
+EDIT 3 -- Section 11 (Open questions)
+================================================================
+
+FIND the current question 4 (the long one about in-flight
+correlation, "ask Bapu" / "decide Blackbird-side"...).
+
+REPLACE that entire numbered item with:
+
+----------------------- BEGIN REPLACEMENT -----------------------
+
+4. Confirm `ProductId` is present in the RiskProfile message body, not only on the Solace topic. (Mark flagged this is worth double-checking -- not a blocker either way since JCSMP gives the topic on every received message.)
+
+------------------------ END REPLACEMENT ------------------------
+
+
+================================================================
+OPTIONAL -- one-line summary at top of Section 9
+================================================================
+
+You can add this single sentence right under the Section 9
+heading (before the rest of the section), to make the clean
+outcome visible to anyone skimming:
+
+----------------------- BEGIN OPTIONAL --------------------------
+
+*Confirmed with Mark: `ProductId` is a client-defined free-form string echoed back on updates, so the bridge can route statelessly with no correlation registry.*
+
+------------------------- END OPTIONAL --------------------------
+
+
+================================================================
+THAT'S IT.
+3 edits. Doc now reflects: stateless via encoded ProductId,
+no CorrelationRegistry, no open architectural dilemma.
+================================================================
