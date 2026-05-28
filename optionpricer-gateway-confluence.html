@@ -1,0 +1,247 @@
+<h1>OptionPricer Gateway &mdash; Design</h1>
+<p><strong>Ticket:</strong> BLACKBIRD-54916 &nbsp;&middot;&nbsp; <strong>Status:</strong> Design</p>
+<p><em>A stateless bridge between Blackbird Trading and BiFrost for option theoreticals and Greeks.</em></p>
+
+<p><strong>Model:&nbsp;</strong> <code>BB Trading &lt;--&gt; optionpricer ROE &lt;--&gt; bridge app &lt;--&gt; BiFrost protos over Solace &lt;--&gt; BiFrost</code></p>
+
+<h2>1. State</h2>
+<p><strong>Done.</strong> The <code>optionpricer-roe</code> module is merged (MR !5728): model, service, enums, and common-model additions. The BiFrost message contract was worked out with Bapu (example payload documented on the BiFrost Confluence page). The ROE pipeline (13298221) is published.</p>
+<p><strong>Pending.</strong> The gateway application itself. The <code>environment.conf</code> entry (config Jira). BLACKBIRD-54934 (Solace queue and VPN bridge setup). Mark has a small local scaffold commit to be cherry-picked as the starting point.</p>
+
+<h2>2. What the bridge does</h2>
+<p>The bridge is a stateless, on-demand translator. It owns no reference data and holds no persistent state. Blackbird Trading passes everything required in the request; the bridge translates between the Blackbird ROE language and the BiFrost protobuf language, and relays messages in both directions. Blackbird never sees a protobuf message; BiFrost never sees an ROE.</p>
+<p>It speaks two languages and is the only component that speaks both:</p>
+<ul>
+<li><strong>ROE side</strong> (<code>optionpricer-roe</code>): the contract between Blackbird Trading and the bridge. Designed by Mark, merged, complete.</li>
+<li><strong>BiFrost side</strong> (their protobuf, pulled in via Nexus): dictated by EQ Risk; we conform to it, we do not control it.</li>
+</ul>
+
+<h2>3. End-to-end flow</h2>
+<p>Request-driven and on-demand. There is no interest list and no start-of-day bulk subscription in scope for now (that is a future enhancement).</p>
+<ol>
+<li>Blackbird Trading needs pricing for an option. It sends an <code>OptionPricingSubscriptionRequestMessage</code> (ROE) on the Blackbird VPN. The inlined <code>OptionProductData</code> carries everything the bridge needs: RIC, UnderlyingRIC, strike, expiry, PutOrCall, ExerciseType, SettlementCode.</li>
+<li>The bridge receives it via a Neeve <code>@EventHandler</code>. It generates a CorrelationId and a ProductId, translates the ROE into a BiFrost <code>PricingRequest</code> (protobuf), and publishes it to the BiFrost request topic.</li>
+<li>The Solace VPN bridge (infrastructure, BLACKBIRD-54934) delivers the request across to the BiFrost VPN. The bridge app itself only connects to the Blackbird VPN.</li>
+<li>BiFrost prices the option and returns a <code>PricingResponse</code> on the CorrelationId, then ongoing <code>RiskProfile</code> updates on the ProductId.</li>
+<li>The bridge receives each response/update via raw JCSMP, translates it into an <code>OptionPricingSnapshotMessage</code> (ROE), and publishes it back on the Blackbird VPN.</li>
+<li>Blackbird Trading, subscribed, receives the snapshots like a market-data feed.</li>
+</ol>
+
+<h3>Flow diagram</h3>
+<ac:structured-macro ac:name="plantuml">
+<ac:plain-text-body><![CDATA[@startuml
+title OptionPricer Gateway -- Subscription Round Trip
+autonumber
+
+participant "Blackbird\nTrading" as BB
+participant "optionpricer-\ngateway\n(bridge)" as GW
+participant "Solace VPN\nbridge\n(BLACKBIRD-54934)" as VPN
+participant "BiFrost\n(EQ Risk)" as BF
+
+== Subscribe ==
+BB -> GW : OptionPricingSubscriptionRequestMessage (ROE)\ninlines OptionProductData
+note right of GW : generate CorrelationId + ProductId\ntranslate ROE -> ProductData
+GW -> VPN : PricingRequest (protobuf)\nPricing/REQUEST/{Underlying}/{CorrelationId}
+VPN -> BF : (cross-VPN delivery)
+
+== Initial price ==
+BF -> VPN : PricingResponse (on CorrelationId)
+VPN -> GW : PricingResponse
+note right of GW : translate RiskProfile -> OptionPricingData
+GW -> BB : OptionPricingSnapshotMessage (ROE)
+
+== Ongoing updates ==
+loop while subscribed
+  BF -> VPN : RiskProfile update (on ProductId)\nPricing/GREEKS/{Underlying}/{ProductId}
+  VPN -> GW : RiskProfile update
+  note right of GW : translate -> OptionPricingData
+  GW -> BB : OptionPricingSnapshotMessage (ROE)
+end
+@enduml]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<h2>4. Architecture</h2>
+<p>Neeve AEP application following the stockloan-gateway pattern. Neeve's <code>com.neeve.server.Main</code> is the JVM entry point; Guice wires <code>@Managed @Singleton</code> beans; <code>@EventHandler</code> methods dispatch inbound ROE messages. Active/passive HA via event sourcing.</p>
+<p>Two messaging styles in one app, exactly as stockloan-gateway:</p>
+<ul>
+<li>Neeve <code>@EventHandler</code> for the Blackbird ROE side (inbound subscription request, outbound snapshots).</li>
+<li>Raw JCSMP for the BiFrost protobuf side (outbound request, inbound response and updates). Protobuf-on-topics is foreign-format traffic, not a Neeve ROE.</li>
+</ul>
+
+<h3>Difference from stockloan-gateway</h3>
+<table>
+<tbody>
+<tr><th>Concern</th><th>stockloan-gateway</th><th>optionpricer-gateway</th></tr>
+<tr><td>External service</td><td>Magics (locates)</td><td>BiFrost (pricing)</td></tr>
+<tr><td>Wire format</td><td>XML SOAP</td><td>Protobuf (via Nexus)</td></tr>
+<tr><td>Interaction</td><td>Request / Response</td><td>Request + Response + streaming updates</td></tr>
+<tr><td>State</td><td>Loads static data</td><td>Stateless &mdash; no static data</td></tr>
+<tr><td>Inbound ROE</td><td>EBorrowRequestMessage</td><td>OptionPricingSubscriptionRequestMessage</td></tr>
+<tr><td>Outbound ROE</td><td>EBorrowResponseMessage</td><td>OptionPricingSnapshotMessage</td></tr>
+<tr><td>HA policy</td><td>Event sourcing</td><td>Event sourcing (identical)</td></tr>
+</tbody>
+</table>
+<ac:structured-macro ac:name="info">
+<ac:rich-text-body><p><strong>Key constraint &mdash; &ldquo;as dumb as possible&rdquo;.</strong> The bridge holds no reference data and performs no enrichment. Blackbird passes everything needed in the request. The only state is transient in-flight correlation (see &sect;8).</p></ac:rich-text-body>
+</ac:structured-macro>
+
+<h2>5. ROE contract (merged)</h2>
+<ac:structured-macro ac:name="code">
+<ac:parameter ac:name="language">text</ac:parameter>
+<ac:plain-text-body><![CDATA[message OptionPricingSubscriptionRequestMessage (id=1)
+  inline:   OptionProductData
+  fields:   SendingTime, SenderCompID, PublishingSystemInstanceID
+
+message OptionPricingSnapshotMessage (id=2)
+  inline:   OptionPricingData
+  fields:   RIC, SendingTime
+
+entity OptionProductData
+  fields:   RIC, UnderlyingRIC, OptionStrikePrice, ExpireDate,
+            PutOrCall, ExerciseType, SettlementCode
+
+entity OptionPricingData
+  fields:   TheoValue, Delta, Gamma, Vega,
+            CashRho, BorrowRho, DivRho, Theta]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<h2>6. Field mapping (translator spec)</h2>
+<p>This is the core of the translator and is now fully determined from the BiFrost protos (<code>pricing_data.proto</code> and <code>riskpnl_data.proto</code>). Both directions are pure functions and unit-testable in isolation.</p>
+
+<h3>Inbound: OptionProductData (ROE) &rarr; ProductData (proto)</h3>
+<p>The Blackbird request inlines <code>OptionProductData</code>. It maps onto BiFrost's <code>ProductData</code> (<code>pricing_data.proto</code>, message <code>ProductData</code>). Field names differ; some need translation (e.g. PutOrCall &rarr; their OptionType enum). The ProductId the bridge generates is carried on <code>ProductData.ProductId</code> (field 10).</p>
+<table>
+<tbody>
+<tr><th>ROE (OptionProductData)</th><th>Proto (ProductData)</th><th>Field #</th></tr>
+<tr><td>OptionStrikePrice</td><td>Strike</td><td>3</td></tr>
+<tr><td>ExpireDate</td><td>Expiry</td><td>2</td></tr>
+<tr><td>PutOrCall</td><td>OptionType (enum xlate)</td><td>6</td></tr>
+<tr><td>ExerciseType</td><td>OptionStyle (enum xlate)</td><td>5</td></tr>
+<tr><td>SettlementCode</td><td>SettlementType</td><td>7</td></tr>
+<tr><td>UnderlyingRIC</td><td>UnderlyingRic</td><td>12</td></tr>
+<tr><td>(generated) ProductId</td><td>ProductId</td><td>10</td></tr>
+<tr><td>(from request) UnderlyingName</td><td>UnderlyingName</td><td>1</td></tr>
+</tbody>
+</table>
+
+<h3>Outbound: PricingResult / RiskProfile (proto) &rarr; OptionPricingData (ROE)</h3>
+<p>The Greeks and theo come off <code>RiskProfile</code>, reached via <code>PricingResult.riskProfile</code> (field 7). <code>RiskProfile</code> lives in <code>riskpnl_data.proto</code>. First-order Greeks come from its <code>firstOrderGreeks</code> (FirstOrdGreeks, field 8); Gamma is second-order, from <code>secondOrderGreeks</code> (SecondOrdGreeks, field 9). TheoValue is <code>RiskProfile.tv</code> (field 15).</p>
+<table>
+<tbody>
+<tr><th>ROE (OptionPricingData)</th><th>Proto source</th><th>Path</th></tr>
+<tr><td>TheoValue</td><td>RiskProfile.tv (15)</td><td><code>riskProfile.tv</code></td></tr>
+<tr><td>Delta</td><td>FirstOrdGreeks.delta (1)</td><td><code>firstOrderGreeks.delta</code></td></tr>
+<tr><td>Vega</td><td>FirstOrdGreeks.vega (2)</td><td><code>firstOrderGreeks.vega</code></td></tr>
+<tr><td>Theta</td><td>FirstOrdGreeks.theta (5)</td><td><code>firstOrderGreeks.theta</code></td></tr>
+<tr><td>CashRho</td><td>FirstOrdGreeks.cashRho (6)</td><td><code>firstOrderGreeks.cashRho</code></td></tr>
+<tr><td>BorrowRho</td><td>FirstOrdGreeks.borrowRho (7)</td><td><code>firstOrderGreeks.borrowRho</code></td></tr>
+<tr><td>DivRho</td><td>FirstOrdGreeks.divRho (8)</td><td><code>firstOrderGreeks.divRho</code></td></tr>
+<tr><td>Gamma</td><td>SecondOrdGreeks.gamma (1)</td><td><code>secondOrderGreeks.gamma</code></td></tr>
+</tbody>
+</table>
+<ac:structured-macro ac:name="warning">
+<ac:rich-text-body><p><strong>Use the plain Greeks.</strong> RiskProfile carries several Greek variants &mdash; <code>firstOrderVolGreeks</code>, <code>userFirstGreeks</code>, <code>firstOrderDynGreeks</code>, and dollar/variance variants (<code>dolGamma</code>, <code>varGamma</code>, etc.). For a vanilla option theo+Greeks subscription, use the plain <code>firstOrderGreeks</code>(8) and <code>secondOrderGreeks</code>(9). The <code>dol*</code> fields are dollar-Greeks (Greek &times; notional); the <code>var*</code> fields are variance-swap-specific. Picking the wrong one yields plausible-but-wrong numbers &mdash; confirm with Bapu.</p></ac:rich-text-body>
+</ac:structured-macro>
+
+<h2>7. Solace topics &amp; VPN</h2>
+<ac:structured-macro ac:name="code">
+<ac:parameter ac:name="language">text</ac:parameter>
+<ac:plain-text-body><![CDATA[Pricing/REQUEST/{UnderlyingName}/{CorrelationId}    BB -> BiFrost   PricingRequest
+Pricing/RESPONSE/{UnderlyingName}/{CorrelationId}   BiFrost -> BB   PricingResponse
+Pricing/GREEKS/{UnderlyingName}/{ProductId}         BiFrost -> BB   RiskProfile
+
+UAT   vpn=flowvol_nyk_uat   host=flowvol-nyk-uat-sol
+PROD  vpn=flowvol_nyk_prd   host=flowvol-nyk-prd-sol]]></ac:plain-text-body>
+</ac:structured-macro>
+<p>The bridge connects only to the Blackbird VPN. The Solace VPN bridge handles cross-VPN delivery to and from BiFrost.</p>
+
+<h2>8. Dependencies</h2>
+<p>The BiFrost protobuf is pulled in via Nexus and used as a normal Java API &mdash; generated classes for PricingRequest, PricingResponse, RiskProfile, etc. No hand-written protobuf parsing.</p>
+<p>The required proto closure is now known: <code>pricing_data.proto</code> imports <code>riskpnl_data</code>, <code>risk_meta</code>, <code>product_data</code>, <code>mkt_data</code>, and <code>stress_data</code>; <code>riskpnl_data.proto</code> in turn imports <code>risk_meta</code> and <code>mkt_data</code>. All live under the same risk-bo repo, so a correctly-built risk-bo:client jar very likely carries the whole closure &mdash; but verify before writing code, not after.</p>
+<ac:structured-macro ac:name="warning">
+<ac:rich-text-body><p><strong>Watch-out:</strong> confirm <code>risk-bo:2.0.181:client</code> packages the full transitive proto closure (riskpnl, risk_meta, product_data, mkt_data, stress_data + base types Date/Currency/Status/RiskId). If any are split into separate artifacts, add them, or message types will be missing at compile time.</p></ac:rich-text-body>
+</ac:structured-macro>
+<ac:structured-macro ac:name="code">
+<ac:parameter ac:name="language">xml</ac:parameter>
+<ac:plain-text-body><![CDATA[<!-- Blackbird side: the merged ROE -->
+<dependency>
+  <groupId>com.barclays.eq.roe</groupId>
+  <artifactId>optionpricer-roe</artifactId>
+</dependency>
+<dependency>
+  <groupId>com.barclays.eq.roe</groupId>
+  <artifactId>common-roe</artifactId>
+</dependency>
+
+<!-- BiFrost side: their protobuf (Nexus) -->
+<dependency>
+  <groupId>com.barclays.eqrisk</groupId>
+  <artifactId>risk-bo</artifactId>
+  <version>2.0.181</version>
+  <classifier>client</classifier>
+</dependency>
+<!-- + any additional risk-* artifacts for the other protos (CONFIRM) -->
+
+<!-- Apex/Neeve platform, AutoValue, etc. -- same as stockloan-gateway -->]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<h2>9. Component structure</h2>
+<p>The translator is the heart of the app and is pure &mdash; message in, message out, no I/O &mdash; so it can be fully unit-tested with no Solace, no bridge, no infrastructure. Publishing is behind interfaces so tests capture the would-be-published message and assert on it.</p>
+<ac:structured-macro ac:name="code">
+<ac:parameter ac:name="language">text</ac:parameter>
+<ac:plain-text-body><![CDATA[com.barcap.eq.oms.optionpricergateway/
+|-- OptionPricerGatewayMain         Neeve entry, @AppHAPolicy, FirstTransactionTask
+|                                   (leaner than stockloan: NO static-data load)
+|-- module/
+|   |-- BiFrostAdapterModule        Guice bindings
+|   \-- ConfigurationComponentModule
+|-- inbound/
+|   \-- SubscriptionRequestHandler  @EventHandler handle(OptionPricingSubscriptionRequestMessage)
+|-- server/bifrost/
+|   |-- BiFrostAdapter              setup(): JCSMP session on BB VPN, subscriptions
+|   |-- PricingMessageTranslator    ROE <-> protobuf  (PURE, fully unit-tested)
+|   |-- PricingRequestPublisher     interface  (mockable)
+|   |   \-- ...Impl                 raw JCSMP publish
+|   |-- PricingResponseHandler      protobuf in -> translate -> publish ROE
+|   |-- RiskProfileHandler          protobuf in -> translate -> publish ROE
+|   |-- CorrelationRegistry         transient in-flight map (if needed, see note below)
+|   \-- OptionPricingParams         @AutoValue carrier
+\-- service/
+    |-- OptionPricingPublisher      interface  (mockable)
+    |   \-- ...Impl                 ROE publish via PublishingService
+    |-- ServiceFacade
+    \-- OptionPricerServiceFacadeImpl
+
+~20 Java files. Smaller than stockloan-gateway: single outbound ROE type, no XML/JDOM,
+no static-data loading.]]></ac:plain-text-body>
+</ac:structured-macro>
+<p><strong>In-flight correlation &mdash; open detail.</strong> When a RiskProfile update arrives on a ProductId, the bridge must know where to route the resulting snapshot. Either the topic structure carries enough to publish statelessly, or a transient in-memory ProductId &rarr; request-context map is kept for the life of the subscription. This is transient correlation state, not persistent reference data, but it should be confirmed against the &ldquo;as dumb as possible&rdquo; directive.</p>
+
+<h2>10. Testing strategy</h2>
+<p>The infrastructure (queues, VPN bridges) is not yet available and is hard to test against. The design isolates translation from transport so the bulk of the work can be built and fully tested before any infrastructure exists.</p>
+<ul>
+<li>Translation is pure: input message A, output message B. Unit-test directly &mdash; assert ROE &rarr; protobuf and protobuf &rarr; ROE field-by-field.</li>
+<li>Publishing sits behind interfaces (<code>PricingRequestPublisher</code>, <code>OptionPricingPublisher</code>). Tests inject a capturing fake, never touch the wire, and compare the captured message to an expected value.</li>
+<li>This de-risks the project: it removes the dependency on BLACKBIRD-54934 for everything except final end-to-end UAT.</li>
+</ul>
+
+<h2>11. Open questions</h2>
+<ol>
+<li>Greek selection &mdash; confirm with Bapu that a vanilla option theo+Greeks subscription reads the plain <code>firstOrderGreeks</code>(8) and <code>secondOrderGreeks</code>(9) off RiskProfile, not the Vol/Dyn/User or dollar/variance variants.</li>
+<li>TheoValue &mdash; confirm TheoValue maps to <code>RiskProfile.tv</code>(15), discounted, not <code>undiscountedTV</code>(24).</li>
+<li>Solace payload placement &mdash; where in the Solace message does BiFrost expect/send the protobuf payload (binary attachment vs other), in both directions? Not answerable from the proto; must confirm with BiFrost.</li>
+<li>In-flight correlation &mdash; stateless routing via topic structure, or a transient correlation map? (see &sect;9)</li>
+<li>Nexus access to <code>risk-bo:2.0.181:client</code> and confirmation it carries the full proto closure &mdash; available or needs request?</li>
+<li>BLACKBIRD-54934 readiness for UAT.</li>
+</ol>
+
+<h2>12. Plan</h2>
+<ol>
+<li>Cherry-pick Mark's scaffold commit. Complete the project skeleton (pom, module layout, main class, static.conf).</li>
+<li>Build <code>PricingMessageTranslator</code> (ROE &harr; protobuf) behind publisher interfaces. Unit-test in isolation &mdash; no infrastructure needed.</li>
+<li>BiFrostAdapter: JCSMP session on the BB VPN, publish PricingRequest, subscribe for response + updates.</li>
+<li>Wire the inbound @EventHandler and the outbound ROE publishing through ServiceFacade / PublishingService.</li>
+<li>environment.conf entries; raise the config Jira.</li>
+<li>UAT deploy (once BLACKBIRD-54934 is ready); end-to-end test against BiFrost UAT; hand off to Trading.</li>
+<li>Pilot prod after the compliance gate.</li>
+</ol>
