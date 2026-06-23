@@ -1,6 +1,13 @@
-The genuinely shared stuff is already in the base (constants, build*
-factories, initMocks). The @Mock fields differ per subclass — the
-listener test mocks the handlers + scheduler, the translator test
-mocks none — so there isn't a common set to hoist without giving
-subclasses mocks they don't use. If you're seeing a specific mock
-repeated across all of them, point me at it and I'll dedupe.
+Status on the bifrost-server MR:
+
+Addressed most of the comments. Pushed back on a few of Greg's
+test-fixture ones with reasoning, and on the SSL one we discussed
+where I think we still disagree. A couple could be phase 2. The
+substantive ones are done — environmentPrefix derived in code,
+static.conf cleanup, scripts moved to deliver/bin, authType handling.
+
+On the failover point — were you able to find anything on how that's
+supposed to work? I'd actually suggest treating it as phase 2: it
+doesn't block UAT integration testing (we're not exercising failover
+there, and it's not prod), so it shouldn't hold up getting the app out
+to test. Agreed it's important, just not a blocker for this stage.
