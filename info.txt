@@ -1,7 +1,7 @@
-Fair thought. Right now every call site uses the built object
-directly and none needs to override a field post-build, so
-returning builders would just add .build() everywhere without
-exercising the flexibility. Also keeps the fixtures consistent with
-stockloan's build-and-return pattern. Happy to switch to
-builder-returning if/when a test actually needs to vary a field —
-easy change at that point.
+These are pure stateless factories — they take primitives and
+return a built message, no instance state or mocks involved. static
+lets the 6 subclasses call them directly alongside the static
+constants (SENDING_MILLIS, DEFAULT_TZ, EPSILON) they use, and
+matches stockloan's TestSetup pattern. Open to making them instance
+methods if there's a specific negative biting us — what did you have
+in mind?
