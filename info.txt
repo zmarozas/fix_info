@@ -1,13 +1,5 @@
-Status on the bifrost-server MR:
+I'm not deep on the Apex HA internals, so I worked off how stockloan does this. StockloanGatewayMain starts its adapter from handle(AepEngineActiveEvent), and the comment on that path says it's for failover to backup — so I used the same event to trigger startBifrostAdapter().
 
-Addressed most of the comments. Pushed back on a few of Greg's
-test-fixture ones with reasoning, and on the SSL one we discussed
-where I think we still disagree. A couple could be phase 2. The
-substantive ones are done — environmentPrefix derived in code,
-static.conf cleanup, scripts moved to deliver/bin, authType handling.
+One difference: stockloan also gates on staticDataLoaded and has a separate StaticDataLoadedMessage path, because it loads static data before it can start. This app is stateless — nothing to load — so I let the single AepEngineActiveEvent handler cover both cold start and failover, with the isPrimary() check inside.
 
-On the failover point — were you able to find anything on how that's
-supposed to work? I'd actually suggest treating it as phase 2: it
-doesn't block UAT integration testing (we're not exercising failover
-there, and it's not prod), so it shouldn't hold up getting the app out
-to test. Agreed it's important, just not a blocker for this stage.
+I've tried to reproduce their pattern, but I'm honestly not fully confident it re-fires on promotion the way I'm assuming. Is there a way to actually exercise a backup→primary failover in UAT (or any test env) so I can verify the adapter starts on the promoted instance? Or is that something better confirmed from the framework side?
