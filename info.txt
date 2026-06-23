@@ -1,7 +1,6 @@
-These are pure stateless factories — they take primitives and
-return a built message, no instance state or mocks involved. static
-lets the 6 subclasses call them directly alongside the static
-constants (SENDING_MILLIS, DEFAULT_TZ, EPSILON) they use, and
-matches stockloan's TestSetup pattern. Open to making them instance
-methods if there's a specific negative biting us — what did you have
-in mind?
+The genuinely shared stuff is already in the base (constants, build*
+factories, initMocks). The @Mock fields differ per subclass — the
+listener test mocks the handlers + scheduler, the translator test
+mocks none — so there isn't a common set to hoist without giving
+subclasses mocks they don't use. If you're seeing a specific mock
+repeated across all of them, point me at it and I'll dedupe.
