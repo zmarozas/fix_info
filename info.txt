@@ -1,0 +1,7 @@
+Fair thought. Right now every call site uses the built object
+directly and none needs to override a field post-build, so
+returning builders would just add .build() everywhere without
+exercising the flexibility. Also keeps the fixtures consistent with
+stockloan's build-and-return pattern. Happy to switch to
+builder-returning if/when a test actually needs to vary a field —
+easy change at that point.
