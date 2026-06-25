@@ -1,0 +1,272 @@
+################################################################################
+# GC / MEMORY / OOM DIAGNOSIS - COMMAND REFERENCE
+#
+# Blackbird OMS shards (equity + options). Plain-text, copy-paste safe.
+# Every block: the command, then "# WHY/READ:" = what it does + how to read it.
+#
+# Environment notes that drive everything below:
+#   - Shards run as owner  sysbbprd ;  you log in as  sysushtro .
+#   - ps / free / /proc / dmesg are world-readable  -> work as ANY user.
+#   - jcmd / lsof / pmap (detail) ATTACH to the JVM -> need the OWNING user
+#     (sudo -u sysbbprd ...), else "Operation not permitted".
+#   - Each shard = TWO JVMs: the big trading JVM (tens of GB) + a tiny
+#     "faxer" companion (~0.1-0.3 GB, -Xmx1g). The trading JVM is what matters.
+#   - +AlwaysPreTouch is ON: the FULL heap is resident from startup, so a
+#     64g heap shows ~64g RSS immediately. RSS above heap size = off-heap.
+#   - Stack as of Jun 2026: JDK 17 + G1GC (migrated off JDK 8 + Parallel GC).
+################################################################################
+
+
+################################################################################
+# 1. FIND THE LOGS / DATA DIRS
+################################################################################
+
+cd /local/1/eqprod/opt/shard_13/data/trading
+ll
+# WHY/READ: locate a shard's trading data dir. You'll see archive/, journal,
+#   rdat/. The "journal" is the Neeve/WASP transaction journal - it is
+#   memory-mapped and pre-allocated (e.g. exactly 60 GB = 64424509440 bytes).
+#   It sits in the OS page cache (buff/cache), NOT in heap. Do not confuse its
+#   size with memory pressure - it's reclaimable cache.
+
+# GC log lives under the shard's log dir, e.g.:
+#   /local/1/eqprod/opt/shard_13/log/trading/gc.log
+
+
+################################################################################
+# 2. BOX MEMORY  -  is there room / is it thrashing?
+################################################################################
+
+free -g
+# WHY/READ: columns are total / used / free / shared / buff/cache / available.
+#   - "available" is the real headroom (free + reclaimable cache). Use THIS,
+#     not "free".
+#   - Swap row: if "used" > 0 and growing, the box is thrashing = bad.
+#     Swap used = 0 is healthy.
+#   - buff/cache being huge is FINE (mmap'd journals etc., reclaimable).
+
+vmstat 1 5
+# WHY/READ: watch the si / so columns (swap-in / swap-out). Non-zero and
+#   sustained = paging to disk = thrashing. Zero = healthy.
+
+
+################################################################################
+# 3. PER-SHARD RSS  (real process footprint, heap + off-heap)
+################################################################################
+
+ps -eo pid,rss,args --sort=-rss | grep shard_ | grep -v grep
+# WHY/READ: raw RSS in KB, biggest first. Divide by 1048576 for GB.
+
+# Same, but printed in GB with the shard name labelled (the useful one):
+ps -eo pid,rss,args --sort=-rss | grep shard_ | grep -v grep | \
+  awk '{match($0,/shard_[0-9]+b?/); printf "%-8s %6.1f GB  %s\n",$1,$2/1048576,substr($0,RSTART,RLENGTH)}'
+# WHY/READ: one line per JVM. Each shard appears TWICE - the big number is the
+#   trading JVM (what matters), the ~0.1-0.3 GB one is its faxer companion.
+#   A trailing "b" in the name (e.g. shard_16b) = backup instance.
+#
+#   *** RSS is the number for the box-capacity question (heap doesn't show
+#       off-heap). With +AlwaysPreTouch, trading RSS ~= Xmx + ~3-5 GB off-heap.
+#
+#   *** LEAK SIGNAL: run this 3-4 times over an hour. If one shard's RSS keeps
+#       CLIMBING while the desk is quiet (e.g. 67 -> 68.6 -> 70.6 GB), that is
+#       growth, not a one-time burst - suspect a leak (see section 8).
+#       A shard sitting flat is healthy.
+#
+#   *** A shard showing ~0.0-0.1 GB for its trading JVM = it is DOWN or just
+#       launched/not warmed (with pretouch, a live JVM shows its full heap at
+#       once). You cannot read its live set until it's up.
+#
+#   Best sampling window for a true peak = the CLOSE (15:00-16:00), footprint
+#   peaks there, not at the open.
+
+
+################################################################################
+# 4. READ JVM FLAGS  -  WITHOUT attach (works as any user)
+#    Use this when jcmd fails with "Operation not permitted".
+################################################################################
+
+# Dump the actual launch command line (explicit flags someone set):
+tr '\0' '\n' < /proc/<PID>/cmdline | grep -Ei 'Xm|NewSize|MaxNew|Alignment|PreTouch|UseG1'
+# WHY/READ: /proc/<pid>/cmdline is world-readable. This shows the EXPLICIT
+#   flags. What to look for:
+#     -Xmx / -Xms                  = heap max / min.
+#     -XX:+UseG1GC                 = G1 collector (good, explicit).
+#     -XX:+AlwaysPreTouch          = full heap resident at startup.
+#     NewSize / MaxNewSize         = young-gen PIN. If BOTH set equal (e.g. 3g)
+#                                    this is a Parallel-GC carryover that fights
+#                                    G1 and DISABLES pause-time control. On G1
+#                                    you want these ABSENT (G1 sizes young
+#                                    adaptively). Absent = good.
+#     -XX:ObjectAlignmentInBytes=16= the ONLY way to keep compressed oops above
+#                                    a 32 GB heap. Absent + heap>32g = oops are
+#                                    disabled (wasteful). See section 5.
+#   NOTE: common typos that silently match nothing: "XmlNewSize" (should be
+#   "Xm|NewSize"), "UseG1PreTouch" (should be "PreTouch|UseG1"). Use the
+#   pattern above exactly.
+
+
+# WITH attach (richer, but needs the owning user):
+sudo -u sysbbprd jcmd <PID> VM.flags | tr ' ' '\n' | grep -Ei 'compressed|alignment|newsize|maxnew|useg1|pretouch'
+# WHY/READ: VM.flags shows EFFECTIVE flags (explicit + JVM-derived defaults),
+#   which cmdline does not. Needs sudo to the owner or it throws
+#   "java.io.IOException: Operation not permitted".
+
+sudo -u sysbbprd jcmd <PID> VM.native_memory summary
+# WHY/READ: off-heap breakdown - ONLY works if the JVM was launched with
+#   -XX:NativeMemoryTracking=summary, else it errors. Useful for chasing an
+#   off-heap leak (direct buffers, Metaspace, etc.).
+
+
+################################################################################
+# 5. COMPRESSED-OOPS CHECK  (the 32 GB cliff)
+################################################################################
+
+grep -iE 'compressed oops|heap address' /local/1/eqprod/opt/shard_13/log/trading/gc.log | head
+# WHY/READ: at boot the JVM logs the oops mode. Read it as:
+#     "Compressed Oops mode: 32-bit"     -> oops ON  (heap < 4 GB)
+#     "Compressed Oops mode: Zero based" -> oops ON  (heap 4-32 GB)  GOOD
+#     "Compressed Oops: Disabled"        -> oops OFF (heap > 32 GB)  PENALTY
+#
+#   THE RULE: above ~32 GB heap, the JVM drops 32-bit compressed pointers and
+#   every reference becomes full 64-bit. You LOSE density - a 64 GB heap can
+#   give LESS usable working room than a tuned 31 GB one, and worse cache use.
+#   So heaps between ~32 GB and ~48 GB are the "dead zone": more -Xmx, less
+#   usable memory.
+#
+#   FIXES (pick one):
+#     - Keep -Xmx <= 31g            -> oops stay on, default alignment. Cleanest
+#                                      if you don't need a >32 GB *working set*.
+#     - If you truly need >32g heap -> add -XX:ObjectAlignmentInBytes=16 to
+#                                      restore compressed oops up to ~64 GB.
+#                                      Costs: inflates every object; validate in
+#                                      dev first. Sharp tool.
+#   Sources: shipilev.net anatomy-quarks #23 (compressed refs) & #24 (alignment);
+#   Atlassian "don't use heap 32-47 GB"; Oracle G1 tuning guide.
+
+
+################################################################################
+# 6. GC QUICK ANALYSIS  (live set, pauses, the sawtooth)
+################################################################################
+
+grep -- "->" /local/1/eqprod/opt/shard_13/log/trading/gc.log | grep ms | tail -40
+# WHY/READ: each young/mixed collection prints  before->after(max), e.g.
+#   "9041M->6248M(16384M) ... 74ms". How to read:
+#     - AFTER the "->"  = heap-after-GC = the LIVE SET (real working data:
+#       orders + reference data). THIS is "how much we actually use." Compare
+#       it to -Xmx for true headroom.
+#     - BEFORE the "->" = transient peak (live set + a cycle's fresh garbage in
+#       eden). Drops every collection - not lasting usage.
+#     - the (max) = committed heap = -Xmx.
+#     - the ms    = pause time. G1 young pauses ~70-80ms is healthy; the
+#       Parallel stack was ~160-380ms (so G1 was a latency win).
+#   The "sawtooth": floor (after) climbs through the day to a live-set ceiling,
+#   peak (before) bounces a few GB above it. Both should sit well under -Xmx.
+
+# Count collection types over the session:
+grep -c "Pause Young" /local/1/eqprod/opt/shard_13/log/trading/gc.log    # young GCs
+grep -c "Pause Full"  /local/1/eqprod/opt/shard_13/log/trading/gc.log    # Full GCs - BAD if >0 under load
+grep -iE "mixed|concurrent" /local/1/eqprod/opt/shard_13/log/trading/gc.log | head
+# WHY/READ: all-young, zero mixed/concurrent, zero Full = healthy steady state.
+#   The only "good" Full GCs are pre-open System.gc() warmup compactions.
+#   Full GCs caused by "Allocation Failure" under load = trouble (heap too
+#   small, IHOP too late, or a leak).
+
+
+################################################################################
+# 7. FIND THE HEAVIEST ARCHIVED DAY  (sizing against a real peak)
+################################################################################
+
+ls -S archive/                       # biggest archived GC logs first (proxy for busiest day)
+# WHY/READ: tarball/log size roughly tracks GC activity. NOTE naming can be
+#   date+1 (file dated the morning after the trading day).
+
+# Old Parallel-stack shutdown dump (live set on a heavy day):
+grep -i "ParOldGen" <old-parallel-gc-log>
+# WHY/READ: line like "ParOldGen ... used 7503472K" -> /1048576 ~= 7.2 GB.
+#   That's the old-gen live set at shutdown = the day's resident working set.
+
+
+################################################################################
+# 8. OOM DIAGNOSIS  -  did it leak, burst, or did the KERNEL kill it?
+#    Do this BEFORE deciding "just add more heap." More heap fixes a burst;
+#    it only DELAYS a leak, and makes a kernel-OOM WORSE.
+################################################################################
+
+# (a) Java heap OOM? (JVM ran out of heap)
+grep -iE 'OutOfMemoryError|java heap space|GC overhead' /local/1/eqprod/opt/shard_13/log/trading/*.log
+# WHY/READ: a hit here = the JVM itself threw OOM = genuinely out of HEAP.
+#   More -Xmx is a valid response IF it's a real working-set/burst (not a leak).
+
+# (b) Kernel OOM-killer? (box ran out of RAM, kernel shot the process)
+dmesg -T | grep -iE 'killed process|out of memory|oom-kill'
+# WHY/READ: a hit here means the BOX was out of physical RAM and the kernel
+#   killed the JVM. Adding heap makes this WORSE (more pinned memory). The fix
+#   is fewer/smaller shards on the box or more RAM, NOT a bigger -Xmx.
+
+# (c) Leak vs burst - is the post-GC FLOOR rising over the session?
+grep -- "->" /local/1/eqprod/opt/shard_13/log/trading/gc.log | grep ms | \
+  awk '{print $0}' | tail -60
+# WHY/READ: read the AFTER-GC values across the day:
+#     - floor roughly FLAT (recovers to ~same level each GC) = healthy. An OOM
+#       here was a one-time BURST -> more heap is reasonable insurance.
+#     - floor STEADILY CLIMBING, never recovering = HEAP LEAK -> more heap just
+#       raises the ceiling it has to climb to; it will OOM again, later. Needs a
+#       heap dump, not more -Xmx.
+#
+#   Cross-check with RSS sampling (section 3):
+#     - GC floor flat BUT RSS still growing = OFF-HEAP leak (Neeve/Chronicle/
+#       direct buffers/Metaspace), not heap. Different bug, different owner.
+#     - GC floor climbing = on-heap leak.
+
+# (d) Arm the NEXT failure so you get evidence (add to launch flags if missing):
+#   -XX:+HeapDumpOnOutOfMemoryError
+#   -XX:HeapDumpPath=/local/1/eqprod/opt/shard_13/log/
+# WHY/READ: on the next Java OOM the JVM writes a heap dump you can open in MAT/
+#   Eclipse to find the leak. Check it's present:
+tr '\0' '\n' < /proc/<PID>/cmdline | grep -i HeapDump
+
+
+################################################################################
+# 9. HANDS-OFF SAMPLER  (log box-avail + summed shard RSS every 10 min)
+################################################################################
+
+while true; do date '+%H:%M'; free -g | awk '/Mem:/{print "avail_gb",$7}'; \
+  ps -eo rss,args | grep shard_ | grep -v grep | awk '{s+=$1} END{print "shards_rss_gb",s/1048576}'; \
+  echo ---; sleep 600; done | tee -a ~/rss_watch.log
+# WHY/READ: passive trend capture. Leave it running; read the tail at EOD. A
+#   rising "shards_rss_gb" with falling "avail_gb" = creeping pressure / leak.
+#   Quick manual "keep-alive" timestamp ticker (handy as an idle marker):
+#     alias ka='while [ 1 == 1 ]; do date; sleep 120; done;'
+
+
+################################################################################
+# 10. BOX FACTS  (cores / RAM)
+################################################################################
+
+nproc                      # logical CPUs
+lscpu                      # sockets / cores / threads-per-core (physical vs logical)
+cat /proc/meminfo          # MemTotal, MemAvailable
+# WHY/READ: the GC-log header "CPUs:" / "Memory:" is what the JVM SEES
+#   (cgroup-aware), NOT guaranteed to equal the physical box. Use these for the
+#   real hardware picture.
+
+
+################################################################################
+# 11. KEY GOTCHAS  (the stuff that bites)
+################################################################################
+# - ps RSS is in KB.  /1048576 = GB.
+# - tar -xzO : capital letter O (not zero). Without z it won't read a .gz.
+# - jcmd / lsof / pmap-detail need the OWNING user (sudo -u sysbbprd ...).
+#   ps / free / vmstat / /proc / dmesg work as any user.
+# - Duplicate -Xmx on one launch line: LAST one wins (confirm with VM.flags).
+# - +AlwaysPreTouch = full heap resident from startup. A heap bump adds its
+#   FULL size to RSS immediately, and slows restart (touches every page).
+# - G1 + heap >32 GB drops compressed oops -> add ObjectAlignmentInBytes=16 or
+#   stay <=31g. 32-47 GB is the worst zone (more heap, less usable).
+# - On G1, do NOT pin young gen (NewSize=MaxNewSize). It disables pause control.
+#   Remove Parallel-era young-gen flags when migrating to G1.
+# - RSS > heap size is normal (off-heap). RSS << heap size = JVM down/just up.
+# - mmap'd journals live in buff/cache (reclaimable) - not memory pressure.
+# - More -Xmx fixes a BURST. It only DELAYS a LEAK and WORSENS a kernel-OOM.
+#   Diagnose (section 8) before resizing.
+################################################################################
