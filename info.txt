@@ -1,5 +1,0 @@
-I'm not deep on the Apex HA internals, so I worked off how stockloan does this. StockloanGatewayMain starts its adapter from handle(AepEngineActiveEvent), and the comment on that path says it's for failover to backup — so I used the same event to trigger startBifrostAdapter().
-
-One difference: stockloan also gates on staticDataLoaded and has a separate StaticDataLoadedMessage path, because it loads static data before it can start. This app is stateless — nothing to load — so I let the single AepEngineActiveEvent handler cover both cold start and failover, with the isPrimary() check inside.
-
-I've tried to reproduce their pattern, but I'm honestly not fully confident it re-fires on promotion the way I'm assuming. Is there a way to actually exercise a backup→primary failover in UAT (or any test env) so I can verify the adapter starts on the promoted instance? Or is that something better confirmed from the framework side?
