@@ -1,0 +1,45 @@
+REPLY 1 — Queue/topic question ("are the queue names hard-coded in the app?")
+----------------------------------------------------------------------------
+I believe only the topics are in config (environment.conf, under
+optionPricerGateway.solace.topics) - nothing queue/topic-related is hardcoded
+in the app; I checked and can't find any literal in the code. The BiFrost side
+doesn't use a queue at all - it's the raw JCSMP direct session with wildcard
+topic subscriptions (Pricing/RESPONSE/>, Pricing/GREEKS/>). The only queue is
+the apex input queue, and that name is platform-derived from the app/instance
+config - e.g. SOLQIN.BB.OPG.OPT.1 for instance 1 - not something we write out
+in the app.
+
+
+REPLY 2 — BLACKBIRD-54935 / Shubham handover
+--------------------------------------------
+Most of 54935 is done - I merged the bulk of Shubham's pull requests, and the
+jobs for all the NPS environments are created and tested. There are a few
+review comments left, but they apply to box names that have been in place for
+a long time, so I don't see them as a priority. I'll pick up what's
+outstanding in his absence.
+
+
+REPLY 3 — Prod queues / bridges
+-------------------------------
+On prod queues and bridges - we'll need to create the Blackbird prod queues and
+the bridges, but I'd hold the CRs until we've proven the solution works
+completely end-to-end. No benefit to provisioning prod objects early, and if
+anything shifts in UAT we'd just have to redo them. I'll have the CR drafted and
+ready so we can submit as soon as we're confident, allowing for the prod
+approval lead time.
+
+
+REPLY 4 — Failover (UAT/QA proof, if you want to send it)
+--------------------------------------------------------
+Confirmed failover in QA. Stood up an HA pair (primary xpilxeqt79t, backup
+xpelxeqt64t), then killed the primary. The backup booted at 03:01 and did NOT
+start the adapter then (isPrimary() guard held it on standby); the BiFrost chain
+only fired at 07:43 when I killed the primary:
+
+Starting BiFrost Adapter -> Connecting to BiFrost solace -> BiFrost solace
+session established -> pricing request publisher started -> inbound listener
+started, subscriptions: [Pricing/RESPONSE/>, Pricing/GREEKS/>]
+
+So AepEngineActiveEvent does re-fire on promotion, the isPrimary() guard works,
+and the promoted node connects + binds both subscriptions. Same mechanism as
+magics, now verified here rather than inferred.
