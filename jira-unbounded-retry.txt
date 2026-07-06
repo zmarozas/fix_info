@@ -1,0 +1,42 @@
+JIRA — Summary
+==============
+Unbounded connect retry on engine thread can wedge gateway (blocks shutdown)
+
+Description
+===========
+MagicsAdapter.setup() (stockloan-gateway) and BifrostAdapter.setup()
+(optionpricer-gateway) both call:
+
+    RetryPolicy.builder().build().tryCall(() -> session.connect());
+
+from the AepEngineActiveEvent handler, i.e. on the engine's single
+event-dispatch thread. If connect fails permanently (e.g. pilot 7/5 incident:
+"No LoginModules configured for SolaceGSS" - missing JAAS config), tryCall
+retries indefinitely, the handler never returns, and the engine processes no
+further events. Consequences observed in stockloan pilot:
+
+- App appears up but is non-functional all day with no clear failure signal.
+- AdminShutdownMessage on the apex queue is never consumed, so graceful
+  shutdown fails ("shutdown failed" on release night); kill -9 required.
+- The existing "Failed to start ... exiting app" catch +
+  setAsLastTransaction in the launcher never fires, because tryCall swallows
+  every exception before it propagates.
+
+Fix
+===
+Bound the retry (or add a time cap) in both adapters so a permanent connect
+failure propagates out of setup() and the existing launcher catch fires ->
+loud startup failure / app exit instead of a silent zombie. Verify what
+RetryPolicy.builder() supports (max attempts / max duration); if nothing
+suitable, wrap tryCall with a deadline.
+
+Scope/priority: rare occurrence, high impact. Timeboxed - if no easy bounded
+option exists in RetryPolicy, park with findings rather than block
+BLACKBIRD-55199.
+
+Acceptance
+==========
+- With an intentionally broken auth config in DEV, the app exits with a clear
+  error within a bounded time instead of retrying indefinitely.
+- Normal startup behavior unchanged (transient broker unavailability still
+  retried within the bound).
