@@ -1,2 +1,18 @@
-Hi Deepa — from message search alone it's not obvious what happened here without deeper research. What I can see: the order arrived on June 30th, was restored on July 1st but nothing happened after that (the child order stayed unacked), then the fill and Done-for-Day came in on July 2nd. Could you share what type of order this is? I thought these high-touch GTD orders typically last one day. Could you also check whether the portfolio type, legal entity and desk look correct on it?
-I'm tied up today on a high-priority deliverable for the emergency funding trade, so I'd suggest we raise a Jira for the dev team to investigate this properly. Happy to add my observations to the ticket.
+I can't access Barclays Jira, but here's a draft you can type in — kept short since you'll be retyping it manually:
+Summary:
+GTD orders routed AMER→APAC not published back to AMER after next-day execution
+Description:
+Orders routed from AMER to APAC on 30 Jun were executed on APAC on 1 Jul, but execution messages never reached AMER. Suspected bug related to holiday/expiration handling — order already expired by the time messages arrived from APAC to AMER (last column in attached screenshot = expiration date). Also reproduced in UAT: order from 8 Jul routed AMER→APAC, executed 9 Jul on APAC, not available in AMER POG UAT.
+Affected comp IDs (30 Jun):
+qtt3r9b9tgxt, qtt3r9bipqfa, qtt3r9bohmgx, qtrpvbfyn9xl, qtrpvbg4w0sh, qtrpvbgcdpu1, qtrpvbghj4sh, qtt3r9dfp6gx
+(full form: 1/BLACKBIRD/US/2/20260630/…/1)
+UAT example (8 Jul): 1/BLACKBIRD/US/2/20260708/qtt3tkam0d1d/1
+Steps:
+
+Route GTD order from AMER to APAC
+Execute on APAC next day
+Observe execution/trade messages not visible in AMER (TradingInternalMarketTradeEventMessage missing)
+
+Reported by: Harsh Mahobia, Deepa Chandroth Panniyan
+Priority: High
+Want me to trim it further, or adjust anything — e.g. whether to fold in the June 30th GTD child-order-unacked anomaly from the Deepa thread, or keep that as a separate ticket?
